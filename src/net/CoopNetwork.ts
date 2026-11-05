@@ -432,9 +432,9 @@ export class CoopNetwork {
   }
 
   /**
-   * Host-only Party Teleport Command:
+   * Party Teleport Command (available to all players in the room):
    * Sends a ['t', senderPeerId, targetPeerId, destX*100, destY*100, destName] packet
-   * so the chosen player (either the host or any remote party member) teleports to the chosen destination!
+   * so any player can teleport themselves or any party member to any other player!
    */
   public sendHostTeleportCommand(
     targetPeerId: string,
@@ -442,7 +442,7 @@ export class CoopNetwork {
     destY: number,
     destName: string
   ) {
-    if (!this.isConnected || !this.isHost) return;
+    if (!this.isConnected) return;
     const pkt: CompactPacket = [
       't',
       this.myPeerId,

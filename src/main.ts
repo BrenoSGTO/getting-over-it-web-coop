@@ -51,7 +51,6 @@ const roomCodeInput = document.getElementById('room-code-input') as HTMLInputEle
 const btnCopyLink = document.getElementById('btn-copy-link') as HTMLButtonElement;
 const chkTether = document.getElementById('chk-tether') as HTMLInputElement;
 const hostTeleportBox = document.getElementById('host-teleport-box')!;
-const guestTeleportHint = document.getElementById('guest-teleport-hint')!;
 const tpFromSelect = document.getElementById('tp-from-select') as HTMLSelectElement;
 const tpToSelect = document.getElementById('tp-to-select') as HTMLSelectElement;
 const btnHostTp = document.getElementById('btn-host-tp') as HTMLButtonElement;
@@ -79,14 +78,8 @@ const network = new CoopNetwork(world, {
     if (online && code) {
       lobbyControls.classList.add('hidden');
       activeRoomBox.classList.remove('hidden');
+      hostTeleportBox.classList.remove('hidden');
       activeRoomCode.textContent = code;
-      if (network.isHost) {
-        hostTeleportBox.classList.remove('hidden');
-        guestTeleportHint.classList.add('hidden');
-      } else {
-        hostTeleportBox.classList.add('hidden');
-        guestTeleportHint.classList.remove('hidden');
-      }
       const url = new URL(window.location.href);
       url.searchParams.set('room', code);
       window.history.replaceState({}, '', url.toString());
@@ -97,7 +90,7 @@ const network = new CoopNetwork(world, {
     player.teleportTo(destX, destY);
     renderer.camPos.x = destX;
     renderer.camPos.y = destY + 1;
-    showToast(`⚡ O líder da party teleportou você até ${destName}!`);
+    showToast(`⚡ Você foi teleportado até ${destName}!`);
   },
 });
 
@@ -143,10 +136,6 @@ btnCopyLink.addEventListener('click', () => {
 });
 
 btnHostTp.addEventListener('click', () => {
-  if (!network.isHost) {
-    showToast('Apenas o líder da party pode teleportar jogadores!');
-    return;
-  }
   const fromId = tpFromSelect.value;
   const toId = tpToSelect.value;
   if (!fromId || !toId) {
@@ -395,35 +384,35 @@ function updateHUD(now: number) {
     }
     playersListEl.innerHTML = html;
 
-    // Keep Host Teleport selects synced with current party members without resetting user's selection
-    if (network.isHost) {
-      const partyMembers = [
-        { id: network.myPeerId, label: `${network.myName} (Você)` },
-        ...Array.from(network.remotePlayers.values()).map((r) => ({
-          id: r.peerId,
-          label: r.name,
-        })),
-      ];
-      const sig = partyMembers.map((m) => `${m.id}:${m.label}`).join('|');
-      if (tpFromSelect.dataset.sig !== sig) {
-        const prevFrom = tpFromSelect.value;
-        const prevTo = tpToSelect.value;
-        const optionsHtml = partyMembers
-          .map((m) => `<option value="${m.id}">${m.label}</option>`)
-          .join('');
-        tpFromSelect.innerHTML = optionsHtml;
-        tpToSelect.innerHTML = optionsHtml;
-        tpFromSelect.dataset.sig = sig;
-        if (prevFrom && partyMembers.some((m) => m.id === prevFrom)) {
-          tpFromSelect.value = prevFrom;
-        } else if (partyMembers.length > 1) {
-          tpFromSelect.value = partyMembers[1].id;
-        }
-        if (prevTo && partyMembers.some((m) => m.id === prevTo)) {
-          tpToSelect.value = prevTo;
-        } else {
-          tpToSelect.value = partyMembers[0].id;
-        }
+    // Keep Teleport selects synced with current party members for ALL players in the room
+    const partyMembers = [
+      { id: network.myPeerId, label: `${network.myName} (Você)` },
+      ...Array.from(network.remotePlayers.values()).map((r) => ({
+        id: r.peerId,
+        label: r.name,
+      })),
+    ];
+    const sig = partyMembers.map((m) => `${m.id}:${m.label}`).join('|');
+    if (tpFromSelect.dataset.sig !== sig) {
+      const prevFrom = tpFromSelect.value;
+      const prevTo = tpToSelect.value;
+      const optionsHtml = partyMembers
+        .map((m) => `<option value="${m.id}">${m.label}</option>`)
+        .join('');
+      tpFromSelect.innerHTML = optionsHtml;
+      tpToSelect.innerHTML = optionsHtml;
+      tpFromSelect.dataset.sig = sig;
+      if (prevFrom && partyMembers.some((m) => m.id === prevFrom)) {
+        tpFromSelect.value = prevFrom;
+      } else {
+        tpFromSelect.value = partyMembers[0].id;
+      }
+      if (prevTo && partyMembers.some((m) => m.id === prevTo)) {
+        tpToSelect.value = prevTo;
+      } else if (partyMembers.length > 1) {
+        tpToSelect.value = partyMembers[1].id;
+      } else {
+        tpToSelect.value = partyMembers[0].id;
       }
     }
   }
