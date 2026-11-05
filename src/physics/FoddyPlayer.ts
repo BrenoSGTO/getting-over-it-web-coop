@@ -53,6 +53,7 @@ export class FoddyPlayer {
   public oldAngle = 0;
   public mouseSnap = false;
   public visualPotTilt = 0;
+  public isInputActive = false;
 
   // Decompiled fields from HammerCollisions.cs & PotSounds.cs
   public tipSlide = true;
@@ -364,16 +365,39 @@ export class FoddyPlayer {
    * Accumulate raw mouse deltas from Pointer Lock (mousemove)
    */
   public addMouseDelta(dx: number, dy: number) {
+    if (!this.isInputActive) return;
     this.pendingMouseDX += dx;
     this.pendingMouseDY -= dy; // Invert Y so moving mouse up = +Y in world
     this.directWorldTarget = null;
   }
 
   /**
-   * Direct cursor target when Pointer Lock is not active (moves 1:1 with mouse on canvas)
+   * Immediately freezes hammer movement and stops tracking the mouse (e.g. when pressing ESC)
+   * so the player never loses progress accidentally while the cursor is unlocked.
    */
-  public setWorldMouseFallback(worldX: number, worldY: number) {
-    this.directWorldTarget = planck.Vec2(worldX, worldY);
+  public setInputActive(active: boolean) {
+    this.isInputActive = active;
+    this.pendingMouseDX = 0;
+    this.pendingMouseDY = 0;
+    this.directWorldTarget = null;
+    this.mouseInput = planck.Vec2(0, 0);
+    this.oldMouse = planck.Vec2(0, 0);
+
+    // Snap fakeCursorPos & cursorOffset to the current physical hammer tip position
+    // so there is zero residual pull or jump when pausing or resuming!
+    const shoulderPos = this.hubBody.getPosition();
+    const tipPos = this.tipBody.getPosition();
+    const currentOffset = planck.Vec2.sub(tipPos, shoulderPos);
+    if (currentOffset.length() >= 0.15) {
+      this.cursorOffset = currentOffset;
+    }
+    this.fakeCursorPos = planck.Vec2.add(shoulderPos, this.cursorOffset);
+    this.mw = this.fakeCursorPos.clone();
+
+    if (!active) {
+      this.hingeJoint.setMotorSpeed(0);
+      this.sliderJoint.setMotorSpeed(0);
+    }
   }
 
   /**
@@ -473,6 +497,24 @@ export class FoddyPlayer {
     // =========================================================================
     // 2. FAKE CURSOR & MOUSE FILTERING (PlayerControl.FixedUpdate)
     // =========================================================================
+    if (!this.isInputActive) {
+      // When paused / ESC pressed (Pointer Lock inactive), completely freeze hammer motors
+      // and anchor fakeCursorPos to the physical tip so the hammer never moves on its own!
+      this.pendingMouseDX = 0;
+      this.pendingMouseDY = 0;
+      this.mouseInput = planck.Vec2(0, 0);
+      this.oldMouse = planck.Vec2(0, 0);
+      const currentOffset = planck.Vec2.sub(tipPos, shoulderPos);
+      if (currentOffset.length() >= 0.15) {
+        this.cursorOffset = currentOffset;
+      }
+      this.fakeCursorPos = planck.Vec2.add(shoulderPos, this.cursorOffset);
+      this.mw = this.fakeCursorPos.clone();
+      this.hingeJoint.setMotorSpeed(0);
+      this.sliderJoint.setMotorSpeed(0);
+      return;
+    }
+
     if (this.mouseSnap) {
       this.mouseSnap = false;
     } else if (this.directWorldTarget) {

@@ -158,6 +158,7 @@ canvas.addEventListener('click', () => {
 
 document.addEventListener('pointerlockchange', () => {
   isPointerLocked = document.pointerLockElement === canvas;
+  player.setInputActive(isPointerLocked);
   if (isPointerLocked) {
     pointerOverlay.classList.add('locked');
   } else {
@@ -166,12 +167,10 @@ document.addEventListener('pointerlockchange', () => {
 });
 
 window.addEventListener('mousemove', (e) => {
+  // Only track mouse movement when Pointer Lock is active!
+  // Pressing ESC exits Pointer Lock and immediately stops hammer tracking so progress is never lost.
   if (isPointerLocked) {
     player.addMouseDelta(e.movementX, e.movementY);
-  } else if (e.target === canvas) {
-    // Follow mouse immediately on canvas even before Pointer Lock is engaged
-    const worldMouse = renderer.screenToWorld(e.clientX, e.clientY);
-    player.setWorldMouseFallback(worldMouse.x, worldMouse.y);
   }
 });
 
@@ -181,14 +180,20 @@ sensSlider.addEventListener('input', () => {
   sensVal.textContent = `${v.toFixed(1)}x`;
 });
 
+const SAVE_KEY = 'goi_original_map_saved_pos_v4';
+
 window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    player.setInputActive(false);
+    return;
+  }
   if (document.activeElement === playerNameInput || document.activeElement === roomCodeInput) {
     return;
   }
   if (e.key.toLowerCase() === 'r') {
     player.teleportTo(level.spawnPoint.x, level.spawnPoint.y);
-    localStorage.removeItem('goi_jungle_saved_pos_v3');
-    showToast('Reiniciado na base da floresta!');
+    localStorage.removeItem(SAVE_KEY);
+    showToast('Reiniciado na base da montanha!');
   }
 });
 
@@ -196,11 +201,11 @@ window.addEventListener('keydown', (e) => {
 // 5. SAVIOUR.CS AUTO-SAVE & FIXED-TIMESTEP GAME LOOP (60Hz)
 // ============================================================================
 let bestHeight = parseFloat(localStorage.getItem('goi_best_height') || '0') || 0;
-const savedPosJson = localStorage.getItem('goi_jungle_saved_pos_v3');
+const savedPosJson = localStorage.getItem(SAVE_KEY);
 if (savedPosJson) {
   try {
     const sp = JSON.parse(savedPosJson);
-    if (typeof sp.x === 'number' && typeof sp.y === 'number' && sp.y > 0.5) {
+    if (typeof sp.x === 'number' && typeof sp.y === 'number' && sp.y > 0.2) {
       player.teleportTo(sp.x, sp.y);
       renderer.camPos.x = sp.x;
       renderer.camPos.y = sp.y + 1;
@@ -220,42 +225,41 @@ let startTime = performance.now();
 let frameCounter = 0;
 
 function gameLoop(now: number) {
-  const frameDt = Math.min((now - lastFrameTime) / 1000, 0.1);
+  const frameDt = Math.min((now - lastFrameTime) / 1000, 0.05);
   lastFrameTime = now;
   accumulator += frameDt;
 
   while (accumulator >= FIXED_DT) {
     player.fixedUpdate(FIXED_DT);
     network.updateRemotePlayers(FIXED_DT, player.potBody, chkTether.checked);
-    world.step(FIXED_DT, 10, 8);
+    world.step(FIXED_DT, 8, 4);
     renderer.updateCamera(FIXED_DT, player);
-
-    frameCounter++;
-
-    // Broadcast Co-op state at 30Hz
-    if (frameCounter % 2 === 0 && network.isConnected) {
-      const potPos = player.potBody.getPosition();
-      const potVel = player.potBody.getLinearVelocity();
-      const tipPos = player.tipBody.getPosition();
-      network.broadcastState(
-        potPos.x,
-        potPos.y,
-        player.visualPotTilt,
-        potVel.x,
-        potVel.y,
-        tipPos.x,
-        tipPos.y,
-        player.hubBody.getAngle()
-      );
-    }
-
-    // Auto-save position every 60 frames (1s), matching Saviour.Update (IL_0070)
-    if (frameCounter % 60 === 0) {
-      const potPos = player.potBody.getPosition();
-      localStorage.setItem('goi_jungle_saved_pos_v3', JSON.stringify({ x: potPos.x, y: potPos.y }));
-    }
-
     accumulator -= FIXED_DT;
+  }
+
+  frameCounter++;
+
+  // Broadcast Co-op state outside physics loop (internally throttled to 12Hz + delta compression)
+  if (network.isConnected) {
+    const potPos = player.potBody.getPosition();
+    const potVel = player.potBody.getLinearVelocity();
+    const tipPos = player.tipBody.getPosition();
+    network.broadcastState(
+      potPos.x,
+      potPos.y,
+      player.visualPotTilt,
+      potVel.x,
+      potVel.y,
+      tipPos.x,
+      tipPos.y,
+      player.hubBody.getAngle()
+    );
+  }
+
+  // Auto-save position every ~90 frames (~1.5s), matching Saviour.Update
+  if (frameCounter % 90 === 0) {
+    const potPos = player.potBody.getPosition();
+    localStorage.setItem(SAVE_KEY, JSON.stringify({ x: potPos.x, y: potPos.y }));
   }
 
   // Render scene

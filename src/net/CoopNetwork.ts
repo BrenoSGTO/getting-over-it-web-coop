@@ -5,6 +5,7 @@ export interface RemotePlayerState {
   peerId: string;
   name: string;
   color: string;
+  // Smoothly interpolated positions rendered at 60fps
   potX: number;
   potY: number;
   potAngle: number;
@@ -13,32 +14,34 @@ export interface RemotePlayerState {
   tipX: number;
   tipY: number;
   tipAngle: number;
+  // Network snapshot targets & velocities for dead-reckoning interpolation
+  netPotX: number;
+  netPotY: number;
+  netPotVX: number;
+  netPotVY: number;
+  netTipX: number;
+  netTipY: number;
+  netTipVX: number;
+  netTipVY: number;
+  lastPacketTime: number;
   lastSeen: number;
   // Kinematic physics bodies in the local world so players can collide/push each other!
   potBody?: planck.Body;
   tipBody?: planck.Body;
 }
 
-export interface NetPacket {
-  type: 'state' | 'welcome' | 'peer-list';
-  peerId: string;
-  name?: string;
-  color?: string;
-  potX?: number;
-  potY?: number;
-  potAngle?: number;
-  potVX?: number;
-  potVY?: number;
-  tipX?: number;
-  tipY?: number;
-  tipAngle?: number;
-  peers?: string[];
-}
+/**
+ * Ultra-compact network wire format to minimize bandwidth (~35 bytes per state packet!):
+ * - State tuple: ['s', peerId, potX*100, potY*100, potVX*20, potVY*20, tipX*100, tipY*100]
+ * - Meta tuple:  ['m', peerId, name, color]
+ */
+export type CompactPacket =
+  | ['s', string, number, number, number, number, number, number]
+  | ['m', string, string, string];
 
 /**
  * Lightweight MQTT v3.1.1 over WSS Relay Client
  * Guarantees 100% connectivity on 3G / 4G / 5G mobile networks (Symmetric CGNAT)
- * even when 0.peerjs.com or UDP WebRTC is blocked by the mobile carrier!
  */
 class MqttWssRelay {
   private ws: WebSocket | null = null;
@@ -55,7 +58,7 @@ class MqttWssRelay {
   constructor(
     private clientId: string,
     private topic: string,
-    private onMessage: (packet: NetPacket) => void,
+    private onMessage: (packet: CompactPacket) => void,
     private onConnected: () => void
   ) {
     this.connect();
@@ -80,25 +83,21 @@ class MqttWssRelay {
         if (buf.length < 2) return;
 
         const packetType = buf[0] & 0xf0;
-        // 0x20 = CONNACK
         if (packetType === 0x20) {
+          // CONNACK
           this.isReady = true;
           this.sendSubscribePacket(this.topic);
           this.onConnected();
           if (this.pingTimer) clearInterval(this.pingTimer);
           this.pingTimer = window.setInterval(() => {
             if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-              this.ws.send(new Uint8Array([0xc0, 0x00])); // PINGREQ
+              this.ws.send(new Uint8Array([0xc0, 0x00]));
             }
-          }, 20000);
+          }, 25000);
         } else if (packetType === 0x30) {
-          // 0x30 = PUBLISH
+          // PUBLISH
           this.parsePublishPacket(buf);
         }
-      };
-
-      this.ws.onerror = () => {
-        // Fallback to next broker on error
       };
 
       this.ws.onclose = () => {
@@ -141,17 +140,17 @@ class MqttWssRelay {
   private sendConnectPacket() {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     const varHeader = new Uint8Array([
-      0x00, 0x04, 0x4d, 0x51, 0x54, 0x54, // "MQTT"
-      0x04, // Protocol level 4 (3.1.1)
-      0x02, // Clean session
-      0x00, 0x3c, // Keep-alive 60s
+      0x00, 0x04, 0x4d, 0x51, 0x54, 0x54,
+      0x04,
+      0x02,
+      0x00, 0x3c,
     ]);
-    const payload = this.encodeString(this.clientId);
+    const payload = this.encodeString(`goi_${this.clientId}`);
     const remLen = varHeader.length + payload.length;
     const remLenBytes = this.encodeLength(remLen);
 
     const pkt = new Uint8Array(1 + remLenBytes.length + remLen);
-    pkt[0] = 0x10; // CONNECT
+    pkt[0] = 0x10;
     pkt.set(remLenBytes, 1);
     pkt.set(varHeader, 1 + remLenBytes.length);
     pkt.set(payload, 1 + remLenBytes.length + varHeader.length);
@@ -167,7 +166,7 @@ class MqttWssRelay {
     const remLenBytes = this.encodeLength(remLen);
 
     const pkt = new Uint8Array(1 + remLenBytes.length + remLen);
-    pkt[0] = 0x82; // SUBSCRIBE
+    pkt[0] = 0x82;
     pkt.set(remLenBytes, 1);
     pkt.set(pktId, 1 + remLenBytes.length);
     pkt.set(topicBytes, 1 + remLenBytes.length + pktId.length);
@@ -175,15 +174,18 @@ class MqttWssRelay {
     this.ws.send(pkt);
   }
 
-  public publish(packet: NetPacket) {
+  public publish(packet: CompactPacket) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.isReady) return;
+    // Drop outgoing state packet if WebSocket send buffer is backed up on slow 3G
+    if (this.ws.bufferedAmount > 2048 && packet[0] === 's') return;
+
     const topicBytes = this.encodeString(this.topic);
     const payloadBytes = new TextEncoder().encode(JSON.stringify(packet));
     const remLen = topicBytes.length + payloadBytes.length;
     const remLenBytes = this.encodeLength(remLen);
 
     const pkt = new Uint8Array(1 + remLenBytes.length + remLen);
-    pkt[0] = 0x30; // PUBLISH (QoS 0)
+    pkt[0] = 0x30;
     pkt.set(remLenBytes, 1);
     pkt.set(topicBytes, 1 + remLenBytes.length);
     pkt.set(payloadBytes, 1 + remLenBytes.length + topicBytes.length);
@@ -205,13 +207,13 @@ class MqttWssRelay {
     offset += 2 + topicLen;
 
     const qos = (buf[0] >> 1) & 0x03;
-    if (qos > 0) offset += 2; // Packet ID
+    if (qos > 0) offset += 2;
 
     if (offset >= buf.length) return;
     const payloadBytes = buf.subarray(offset, Math.min(buf.length, offset + remLen));
     try {
       const jsonStr = new TextDecoder().decode(payloadBytes);
-      const data = JSON.parse(jsonStr) as NetPacket;
+      const data = JSON.parse(jsonStr) as CompactPacket;
       this.onMessage(data);
     } catch {
       // Ignore malformed payload
@@ -234,7 +236,7 @@ class MqttWssRelay {
           this.ws.close();
         }
       } catch {
-        // Ignore close error
+        // Ignore
       }
       this.ws = null;
     }
@@ -248,11 +250,20 @@ export class CoopNetwork {
   public remotePlayers: Map<string, RemotePlayerState> = new Map();
 
   public roomCode = '';
-  public myPeerId = `monkey_${Math.random().toString(36).substring(2, 9)}`;
+  // Short 4-char peer ID saves bandwidth in every packet
+  public myPeerId = Math.random().toString(36).substring(2, 6);
   public myName = 'Macaco';
   public myColor = '#f59e0b';
   public isConnected = false;
   private isConnectingCode = '';
+
+  // Delta-compression & rate-limiting state
+  private lastSentPotX = -999;
+  private lastSentPotY = -999;
+  private lastSentTipX = -999;
+  private lastSentTipY = -999;
+  private lastStateSendTime = 0;
+  private lastMetaSendTime = 0;
 
   private onStatusChange?: (status: string, online: boolean, roomCode: string) => void;
   private onToast?: (msg: string) => void;
@@ -280,7 +291,6 @@ export class CoopNetwork {
   private getIceServers(): RTCIceServer[] {
     return [
       { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
       { urls: 'stun:stun.cloudflare.com:3478' },
       {
         urls: [
@@ -296,11 +306,6 @@ export class CoopNetwork {
     ];
   }
 
-  /**
-   * Connects to a room using BOTH:
-   * 1. Instant WSS Relay (works 100% on 3G/4G CGNAT even if 0.peerjs.com is blocked!)
-   * 2. WebRTC PeerJS P2P DataChannel (with TURN relay fallback)
-   */
   public hostRoom(customCode?: string): Promise<string> {
     const raw = customCode ? customCode.trim().toUpperCase() : this.generateShortCode();
     const code = raw.startsWith('GOI-') ? raw : `GOI-${raw}`;
@@ -314,7 +319,6 @@ export class CoopNetwork {
   }
 
   private connectToRoom(code: string, asHost: boolean): Promise<string> {
-    // Guard against duplicate calls while already connected/connecting to the same room
     if (this.isConnectingCode === code || (this.isConnected && this.roomCode === code)) {
       return Promise.resolve(code);
     }
@@ -326,12 +330,13 @@ export class CoopNetwork {
 
     return new Promise((resolve) => {
       let resolved = false;
-      const markOnline = (via: string) => {
+      const markOnline = () => {
         this.isConnectingCode = '';
         if (!this.isConnected) {
           this.isConnected = true;
           this.onStatusChange?.(`Sala Ativa (${code})`, true, code);
-          this.onToast?.(`Conectado à sala ${code} (${via})! Envie o link para seu amigo.`);
+          this.onToast?.(`Sala ${code} conectada! Envie o link para seu amigo.`);
+          this.sendMetadataPacket();
         }
         if (!resolved) {
           resolved = true;
@@ -339,16 +344,16 @@ export class CoopNetwork {
         }
       };
 
-      // 1. Start 3G-proof WSS Relay immediately (connects in ~300ms on any mobile network!)
-      const topic = `goi-skibidi-coop-v2/${code}`;
+      // 1. Primary 3G-proof WSS Relay (compact binary/tuple packets)
+      const topic = `goi-skibidi-v3/${code}`;
       this.mqttRelay = new MqttWssRelay(
         this.myPeerId,
         topic,
         (packet) => this.handleIncomingPacket(packet),
-        () => markOnline('Relay 3G/Web')
+        () => markOnline()
       );
 
-      // 2. Also start optional PeerJS P2P in background without blocking or crashing if 0.peerjs.com fails
+      // 2. Optional P2P DataChannel (if direct WebRTC succeeds, uses P2P instead of relay)
       try {
         const hostPeerId = `getting-over-it-coop-${code}`;
         this.peer = asHost
@@ -358,9 +363,9 @@ export class CoopNetwork {
         this.peer.on('open', () => {
           if (!asHost && this.peer) {
             const conn = this.peer.connect(hostPeerId, { reliable: false });
-            this.setupConnection(conn, () => markOnline('P2P'));
+            this.setupConnection(conn, () => markOnline());
           } else {
-            markOnline('Host');
+            markOnline();
           }
         });
 
@@ -369,7 +374,7 @@ export class CoopNetwork {
         });
 
         this.peer.on('error', () => {
-          // Silently ignore 0.peerjs.com errors since MqttWssRelay handles 3G connectivity!
+          // Handled seamlessly by MqttWssRelay
         });
       } catch {
         // Ignore PeerJS init errors
@@ -381,10 +386,11 @@ export class CoopNetwork {
     conn.on('open', () => {
       this.connections.set(conn.peer, conn);
       onOpenCallback?.();
+      this.sendMetadataPacket();
     });
 
     conn.on('data', (rawData) => {
-      this.handleIncomingPacket(rawData as NetPacket);
+      this.handleIncomingPacket(rawData as CompactPacket);
     });
 
     conn.on('close', () => {
@@ -392,40 +398,91 @@ export class CoopNetwork {
     });
   }
 
-  private handleIncomingPacket(data: NetPacket) {
-    if (!data || !data.peerId || data.peerId === this.myPeerId) return;
+  public sendMetadataPacket() {
+    if (!this.isConnected) return;
+    const pkt: CompactPacket = ['m', this.myPeerId, this.myName.slice(0, 14), this.myColor];
+    this.sendRawPacket(pkt);
+    this.lastMetaSendTime = performance.now();
+  }
 
-    if (data.type === 'state' && data.potX !== undefined && data.potY !== undefined) {
-      let remote = this.remotePlayers.get(data.peerId);
-      if (!remote) {
-        remote = this.createRemotePlayerBodies(data);
-        this.remotePlayers.set(data.peerId, remote);
-        this.onToast?.(`🐒 ${remote.name} entrou na selva!`);
+  private sendRawPacket(pkt: CompactPacket) {
+    // Prefer direct P2P DataChannel if open; otherwise send via WSS Relay (never duplicate!)
+    let sentViaP2P = false;
+    for (const conn of this.connections.values()) {
+      if (conn.open) {
+        conn.send(pkt);
+        sentViaP2P = true;
       }
-
-      remote.name = data.name || remote.name;
-      remote.color = data.color || remote.color;
-      remote.potX = data.potX;
-      remote.potY = data.potY;
-      remote.potAngle = data.potAngle || 0;
-      remote.potVX = data.potVX || 0;
-      remote.potVY = data.potVY || 0;
-      remote.tipX = data.tipX ?? data.potX + 1;
-      remote.tipY = data.tipY ?? data.potY + 1;
-      remote.tipAngle = data.tipAngle || 0;
-      remote.lastSeen = performance.now();
+    }
+    if (!sentViaP2P && this.mqttRelay && this.mqttRelay.isReady) {
+      this.mqttRelay.publish(pkt);
     }
   }
 
-  private createRemotePlayerBodies(data: NetPacket): RemotePlayerState {
-    const potX = data.potX || 0;
-    const potY = data.potY || 1.2;
+  private handleIncomingPacket(pkt: CompactPacket) {
+    if (!Array.isArray(pkt) || pkt.length < 2) return;
+    const type = pkt[0];
+    const peerId = pkt[1];
+    if (!peerId || peerId === this.myPeerId) return;
 
+    const now = performance.now();
+
+    if (type === 'm') {
+      const [, , name, color] = pkt;
+      const remote = this.remotePlayers.get(peerId);
+      if (remote) {
+        remote.name = name || remote.name;
+        remote.color = color || remote.color;
+        remote.lastSeen = now;
+      }
+      return;
+    }
+
+    if (type === 's') {
+      const [, , qPotX, qPotY, qVX, qVY, qTipX, qTipY] = pkt;
+      const potX = qPotX / 100;
+      const potY = qPotY / 100;
+      const potVX = qVX / 20;
+      const potVY = qVY / 20;
+      const tipX = qTipX / 100;
+      const tipY = qTipY / 100;
+
+      let remote = this.remotePlayers.get(peerId);
+      if (!remote) {
+        remote = this.createRemotePlayerBodies(peerId, potX, potY, tipX, tipY);
+        this.remotePlayers.set(peerId, remote);
+        this.onToast?.(`🐒 Um Macaco entrou na selva!`);
+        // Reply with our metadata so the newcomer gets our name & color immediately
+        this.sendMetadataPacket();
+      }
+
+      const dtNet = Math.max((now - remote.lastPacketTime) / 1000, 0.04);
+      remote.netTipVX = Math.max(-25, Math.min(25, (tipX - remote.netTipX) / dtNet));
+      remote.netTipVY = Math.max(-25, Math.min(25, (tipY - remote.netTipY) / dtNet));
+
+      remote.netPotX = potX;
+      remote.netPotY = potY;
+      remote.netPotVX = potVX;
+      remote.netPotVY = potVY;
+      remote.netTipX = tipX;
+      remote.netTipY = tipY;
+      remote.lastPacketTime = now;
+      remote.lastSeen = now;
+    }
+  }
+
+  private createRemotePlayerBodies(
+    peerId: string,
+    potX: number,
+    potY: number,
+    tipX: number,
+    tipY: number
+  ): RemotePlayerState {
     const potBody = this.world.createBody({
       type: 'kinematic',
       position: planck.Vec2(potX, potY),
     });
-    const f = potBody.createFixture(planck.Circle(planck.Vec2(0, -0.15), 0.48), {
+    const f = potBody.createFixture(planck.Circle(planck.Vec2(0, -0.15), 0.45), {
       friction: 0.9,
       restitution: 0.1,
     });
@@ -433,26 +490,36 @@ export class CoopNetwork {
 
     const tipBody = this.world.createBody({
       type: 'kinematic',
-      position: planck.Vec2(data.tipX || potX + 1, data.tipY || potY + 1),
+      position: planck.Vec2(tipX, tipY),
     });
     const tf = tipBody.createFixture(planck.Circle(0.18), {
       friction: 0.8,
     });
     tf.setUserData({ isTerrain: true, material: 'wood' });
 
+    const now = performance.now();
     return {
-      peerId: data.peerId,
-      name: data.name || 'Macaco Amigo',
-      color: data.color || '#38bdf8',
+      peerId,
+      name: `Macaco ${peerId.slice(0, 3).toUpperCase()}`,
+      color: '#38bdf8',
       potX,
       potY,
-      potAngle: data.potAngle || 0,
+      potAngle: 0,
       potVX: 0,
       potVY: 0,
-      tipX: data.tipX || potX + 1,
-      tipY: data.tipY || potY + 1,
-      tipAngle: data.tipAngle || 0,
-      lastSeen: performance.now(),
+      tipX,
+      tipY,
+      tipAngle: 0,
+      netPotX: potX,
+      netPotY: potY,
+      netPotVX: 0,
+      netPotVY: 0,
+      netTipX: tipX,
+      netTipY: tipY,
+      netTipVX: 0,
+      netTipVY: 0,
+      lastPacketTime: now,
+      lastSeen: now,
       potBody,
       tipBody,
     };
@@ -468,48 +535,72 @@ export class CoopNetwork {
     }
   }
 
+  /**
+   * Bandwidth-Optimized State Broadcast:
+   * - Throttled to 12Hz (every ~80ms) instead of 30Hz
+   * - Delta-compressed: skips sending when the player is stationary
+   * - Quantized tuple format (~34 bytes instead of 190 bytes!)
+   */
   public broadcastState(
     potX: number,
     potY: number,
-    potAngle: number,
+    _potAngle: number,
     potVX: number,
     potVY: number,
     tipX: number,
     tipY: number,
-    tipAngle: number
+    _tipAngle: number
   ) {
     if (!this.isConnected) return;
 
-    const packet: NetPacket = {
-      type: 'state',
-      peerId: this.myPeerId,
-      name: this.myName,
-      color: this.myColor,
-      potX: Number(potX.toFixed(3)),
-      potY: Number(potY.toFixed(3)),
-      potAngle: Number(potAngle.toFixed(3)),
-      potVX: Number(potVX.toFixed(2)),
-      potVY: Number(potVY.toFixed(2)),
-      tipX: Number(tipX.toFixed(3)),
-      tipY: Number(tipY.toFixed(3)),
-      tipAngle: Number(tipAngle.toFixed(3)),
-    };
+    const now = performance.now();
 
-    // Send via 3G-proof WSS Relay
-    if (this.mqttRelay && this.mqttRelay.isReady) {
-      this.mqttRelay.publish(packet);
+    // Refresh metadata every 4 seconds (tiny 28-byte packet)
+    if (now - this.lastMetaSendTime > 4000) {
+      this.sendMetadataPacket();
     }
 
-    // Also send via direct P2P connections if open
-    for (const conn of this.connections.values()) {
-      if (conn.open) {
-        conn.send(packet);
-      }
+    // Throttle state packets to 12Hz (80ms interval) to keep 3G buffer 100% lag-free
+    if (now - this.lastStateSendTime < 80) return;
+
+    // Delta check: if player & hammer barely moved, only send a heartbeat every 1.5s
+    const movedDist =
+      Math.abs(potX - this.lastSentPotX) +
+      Math.abs(potY - this.lastSentPotY) +
+      Math.abs(tipX - this.lastSentTipX) +
+      Math.abs(tipY - this.lastSentTipY);
+
+    if (movedDist < 0.015 && now - this.lastStateSendTime < 1500) {
+      return;
     }
+
+    this.lastSentPotX = potX;
+    this.lastSentPotY = potY;
+    this.lastSentTipX = tipX;
+    this.lastSentTipY = tipY;
+    this.lastStateSendTime = now;
+
+    const compactState: CompactPacket = [
+      's',
+      this.myPeerId,
+      Math.round(potX * 100),
+      Math.round(potY * 100),
+      Math.round(potVX * 20),
+      Math.round(potVY * 20),
+      Math.round(tipX * 100),
+      Math.round(tipY * 100),
+    ];
+
+    this.sendRawPacket(compactState);
   }
 
+  /**
+   * 60Hz Client-Side Dead-Reckoning (Velocity Extrapolation) + Smooth Hermite Blending:
+   * Predicts remote player motion between 12Hz packets so remote players move at a
+   * silky-smooth 60fps even on high-latency 3G connections!
+   */
   public updateRemotePlayers(
-    _dt: number,
+    dt: number,
     localPotBody: planck.Body,
     tetherEnabled: boolean
   ) {
@@ -521,21 +612,56 @@ export class CoopNetwork {
       }
 
       if (r.potBody && r.tipBody) {
+        // Time elapsed since the last network packet arrived (capped at 120ms for prediction)
+        const ageSec = Math.min(Math.max((now - r.lastPacketTime) / 1000, 0), 0.12);
+
+        // Dead-reckoning predicted position using velocity at snapshot time
+        const predPotX = r.netPotX + r.netPotVX * ageSec;
+        const predPotY = r.netPotY + r.netPotVY * ageSec;
+
+        const predTipX = r.netTipX + r.netTipVX * ageSec * 0.75;
+        const predTipY = r.netTipY + r.netTipVY * ageSec * 0.75;
+
+        // Exponential smoothing (frame-rate independent) toward the moving predicted target
+        const potBlend = 1.0 - Math.exp(-16.0 * dt);
+        const tipBlend = 1.0 - Math.exp(-22.0 * dt);
+
+        const distErr = Math.hypot(predPotX - r.potX, predPotY - r.potY);
+        if (distErr > 6.0) {
+          // Teleport immediately if over 6 meters desynced
+          r.potX = predPotX;
+          r.potY = predPotY;
+          r.tipX = predTipX;
+          r.tipY = predTipY;
+        } else {
+          r.potX += (predPotX - r.potX) * potBlend;
+          r.potY += (predPotY - r.potY) * potBlend;
+          r.tipX += (predTipX - r.tipX) * tipBlend;
+          r.tipY += (predTipY - r.tipY) * tipBlend;
+        }
+
+        // Smooth visual tilt and arm angle derived from interpolated positions
+        const targetTilt = Math.max(-0.18, Math.min(0.18, -r.netPotVX * 0.025));
+        r.potAngle += (targetTilt - r.potAngle) * 0.2;
+        r.tipAngle = Math.atan2(r.tipY - (r.potY + 0.35), r.tipX - r.potX);
+
+        // Update kinematic bodies with smooth velocity so collisions feel solid
         const curPot = r.potBody.getPosition();
-        const nextPotX = curPot.x + (r.potX - curPot.x) * 0.35;
-        const nextPotY = curPot.y + (r.potY - curPot.y) * 0.35;
-        r.potBody.setPosition(planck.Vec2(nextPotX, nextPotY));
-        r.potBody.setAngle(r.potAngle);
+        r.potBody.setLinearVelocity(
+          planck.Vec2((r.potX - curPot.x) / dt, (r.potY - curPot.y) / dt)
+        );
+        r.potBody.setPosition(planck.Vec2(r.potX, r.potY));
 
         const curTip = r.tipBody.getPosition();
-        const nextTipX = curTip.x + (r.tipX - curTip.x) * 0.45;
-        const nextTipY = curTip.y + (r.tipY - curTip.y) * 0.45;
-        r.tipBody.setPosition(planck.Vec2(nextTipX, nextTipY));
-        r.tipBody.setAngle(r.tipAngle);
+        r.tipBody.setLinearVelocity(
+          planck.Vec2((r.tipX - curTip.x) / dt, (r.tipY - curTip.y) / dt)
+        );
+        r.tipBody.setPosition(planck.Vec2(r.tipX, r.tipY));
 
+        // Optional Elastic Co-op Vine Tether
         if (tetherEnabled) {
           const myPos = localPotBody.getPosition();
-          const diff = planck.Vec2.sub(planck.Vec2(nextPotX, nextPotY), myPos);
+          const diff = planck.Vec2.sub(planck.Vec2(r.potX, r.potY), myPos);
           const dist = diff.length();
           const maxRopeLength = 4.2;
           if (dist > maxRopeLength) {

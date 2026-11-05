@@ -17,9 +17,10 @@ export class GameRenderer {
   }
 
   public resize() {
-    this.canvas.width = window.innerWidth * window.devicePixelRatio;
-    this.canvas.height = window.innerHeight * window.devicePixelRatio;
-    this.ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
+    this.canvas.width = window.innerWidth * dpr;
+    this.canvas.height = window.innerHeight * dpr;
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
   /**
@@ -97,17 +98,62 @@ export class GameRenderer {
     // 3. Draw Signposts in Background
     this.drawSignposts(ctx, level);
 
-    // 4. Draw Jungle Terrain Blocks (Branches, Vine Knots, Mossy Rocks)
+    // 4. Draw Jungle Terrain Blocks (with Viewport Frustum Culling for max FPS)
+    const viewHalfW = w / ppm / 2 + 8;
+    const viewHalfH = h / ppm / 2 + 8;
     for (const b of level.blocks) {
+      const blockHalfW = (b.width || b.radius || 1) / 2;
+      const blockHalfH = (b.height || b.radius || 1) / 2;
+      if (
+        Math.abs(b.x - this.camPos.x) > viewHalfW + blockHalfW ||
+        Math.abs(b.y - this.camPos.y) > viewHalfH + blockHalfH
+      ) {
+        continue;
+      }
+
       ctx.save();
       ctx.translate(b.x, b.y);
       if (b.angle) ctx.rotate(b.angle);
 
       ctx.fillStyle = b.color;
       ctx.strokeStyle = b.strokeColor;
-      ctx.lineWidth = 0.07;
+      ctx.lineWidth = 0.065;
+      ctx.lineJoin = 'round';
 
-      if (b.shapeType === 'box' && b.width && b.height) {
+      if (b.shapeType === 'polygon' && b.vertices && b.vertices.length >= 3) {
+        ctx.beginPath();
+        ctx.moveTo(b.vertices[0].x, b.vertices[0].y);
+        for (let i = 1; i < b.vertices.length; i++) {
+          ctx.lineTo(b.vertices[i].x, b.vertices[i].y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Highlight top-facing moss/bark edges on reverse-engineered Getting Over It terrain
+        ctx.strokeStyle =
+          b.material === 'ice'
+            ? '#5eead4'
+            : b.material === 'wood'
+              ? '#ca8a04'
+              : '#4ade80';
+        ctx.lineWidth = 0.055;
+        ctx.beginPath();
+        let hasTopEdge = false;
+        for (let i = 0; i < b.vertices.length; i++) {
+          const v1 = b.vertices[i];
+          const v2 = b.vertices[(i + 1) % b.vertices.length];
+          const dx = v2.x - v1.x;
+          const dy = v2.y - v1.y;
+          // In local coordinates, top edges have substantial horizontal span near the upper half
+          if (Math.abs(dx) > Math.abs(dy) * 0.7 && (v1.y + v2.y) * 0.5 >= 0) {
+            ctx.moveTo(v1.x, v1.y);
+            ctx.lineTo(v2.x, v2.y);
+            hasTopEdge = true;
+          }
+        }
+        if (hasTopEdge) ctx.stroke();
+      } else if (b.shapeType === 'box' && b.width && b.height) {
         ctx.beginPath();
         ctx.roundRect(-b.width / 2, -b.height / 2, b.width, b.height, 0.14);
         ctx.fill();
