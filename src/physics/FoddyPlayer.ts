@@ -112,9 +112,9 @@ export class FoddyPlayer {
 
     // Lower rounded base of the porcelain toilet bowl
     this.potBottomFixture = this.potBody.createFixture(
-      planck.Circle(planck.Vec2(0, -0.18), 0.5),
+      planck.Circle(planck.Vec2(0, -0.18), 0.45),
       {
-        density: 3.1,
+        density: 3.0,
         friction: this.POT_SLIDING_FRICTION,
         restitution: 0.0,
         filterGroupIndex: -1, // Never collide with own arm/hammer
@@ -122,12 +122,12 @@ export class FoddyPlayer {
     );
     this.potBottomFixture.setUserData({ isPot: true });
 
-    // Upper rim of the toilet bowl
+    // Smooth rounded upper bowl (capsule top so it never snags on corners!)
     const rimFixture = this.potBody.createFixture(
-      planck.Box(0.44, 0.2, planck.Vec2(0, 0.08), 0),
+      planck.Circle(planck.Vec2(0, 0.06), 0.41),
       {
-        density: 1.1,
-        friction: 0.2,
+        density: 1.0,
+        friction: 0.15,
         restitution: 0.0,
         filterGroupIndex: -1,
       }
