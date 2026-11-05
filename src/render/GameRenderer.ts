@@ -9,11 +9,48 @@ export class GameRenderer {
   public camPos = { x: 0, y: 2.5 };
   public camVel = { x: 0, y: 0 };
   public pixelsPerMeter = 46; // Ortho zoom scale
+  private monkeyToiletSprite: HTMLCanvasElement | null = null;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d')!;
     this.resize();
     window.addEventListener('resize', () => this.resize());
+    this.loadRealisticMonkeyToiletSprite();
+  }
+
+  private loadRealisticMonkeyToiletSprite() {
+    const img = new Image();
+    img.src = 'monkey_toilet.jpg';
+    img.onload = () => {
+      const off = document.createElement('canvas');
+      off.width = img.width;
+      off.height = img.height;
+      const octx = off.getContext('2d');
+      if (!octx) return;
+      octx.drawImage(img, 0, 0);
+      const imgData = octx.getImageData(0, 0, off.width, off.height);
+      const data = imgData.data;
+
+      // Chroma-key out the bright magenta (#FF00FF) background + despill magenta edges
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        const magentaDominance = Math.min(r, b) - g;
+        if (magentaDominance > 65 && r > 130 && b > 130) {
+          // Smooth feathering at the silhouette boundary
+          const alpha = Math.max(0, Math.min(1, (115 - magentaDominance) / 50));
+          data[i + 3] = Math.round(alpha * 255);
+          if (alpha > 0) {
+            // Despill magenta fringe on hair/porcelain edges
+            data[i] = g;
+            data[i + 2] = g;
+          }
+        }
+      }
+      octx.putImageData(imgData, 0, 0);
+      this.monkeyToiletSprite = off;
+    };
   }
 
   public resize() {
@@ -319,146 +356,37 @@ export class GameRenderer {
     ctx.translate(potX, potY);
     ctx.rotate(potAngle);
 
-    // 1. Porcelain Toilet Water Tank (Caixa Acoplada) at the back
-    ctx.fillStyle = '#e2e8f0';
-    ctx.strokeStyle = '#64748b';
-    ctx.lineWidth = 0.035;
-    ctx.beginPath();
-    ctx.roundRect(-0.5, -0.05, 0.26, 0.56, 0.05);
-    ctx.fill();
-    ctx.stroke();
-
-    // Toilet Tank Lid
-    ctx.fillStyle = '#f8fafc';
-    ctx.beginPath();
-    ctx.roundRect(-0.53, 0.47, 0.32, 0.09, 0.04);
-    ctx.fill();
-    ctx.stroke();
-
-    // Chrome Flush Handle on the tank
-    ctx.strokeStyle = '#fbbf24';
-    ctx.lineWidth = 0.035;
-    ctx.beginPath();
-    ctx.moveTo(-0.44, 0.38);
-    ctx.lineTo(-0.56, 0.35);
-    ctx.stroke();
-
-    // 2. Monkey Torso emerging from the toilet bowl
-    ctx.fillStyle = '#7c2d12'; // Furry monkey brown
-    ctx.strokeStyle = '#451a03';
-    ctx.lineWidth = 0.03;
-    ctx.beginPath();
-    ctx.roundRect(-0.22, 0.02, 0.44, 0.46, 0.16);
-    ctx.fill();
-    ctx.stroke();
-
-    // Monkey Belly Patch
-    ctx.fillStyle = '#d97706';
-    ctx.beginPath();
-    ctx.ellipse(0.03, 0.24, 0.13, 0.16, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // 3. Monkey Head (looking toward the banana pickaxe!)
-    const lookDirX = Math.cos(armAngle - potAngle) * 0.05;
-    const headX = lookDirX;
-    const headY = 0.66;
-
-    // Monkey Round Ears (Left & Right)
-    for (const side of [-1, 1]) {
-      ctx.fillStyle = '#7c2d12';
-      ctx.strokeStyle = '#451a03';
-      ctx.lineWidth = 0.03;
+    if (this.monkeyToiletSprite) {
+      // Flip horizontally when the banana pickaxe is on the left side of the monkey!
+      const facingDir = Math.cos(armAngle - potAngle) >= -0.15 ? 1 : -1;
+      ctx.save();
+      // In world space, +Y is up, so scale(facingDir, -1) draws the upright image!
+      ctx.scale(facingDir, -1);
+      // Align the porcelain base (-0.63m) and monkey head (+0.95m) with the physics collider
+      ctx.drawImage(this.monkeyToiletSprite, -0.78, -0.96, 1.56, 1.62);
+      ctx.restore();
+    } else {
+      // Fallback procedural monkey + toilet while image loads
+      ctx.fillStyle = '#e2e8f0';
+      ctx.strokeStyle = '#64748b';
+      ctx.lineWidth = 0.035;
       ctx.beginPath();
-      ctx.arc(headX + side * 0.22, headY + 0.02, 0.09, 0, Math.PI * 2);
+      ctx.roundRect(-0.5, -0.05, 0.26, 0.56, 0.05);
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = '#fdba74';
+      ctx.fillStyle = '#7c2d12';
       ctx.beginPath();
-      ctx.arc(headX + side * 0.22, headY + 0.02, 0.05, 0, Math.PI * 2);
+      ctx.arc(0, 0.62, 0.22, 0, Math.PI * 2);
       ctx.fill();
-    }
 
-    // Monkey Cranium
-    ctx.fillStyle = '#7c2d12';
-    ctx.strokeStyle = '#451a03';
-    ctx.lineWidth = 0.03;
-    ctx.beginPath();
-    ctx.arc(headX, headY, 0.22, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    // Colored Jungle Bandana on forehead
-    ctx.fillStyle = accentColor;
-    ctx.beginPath();
-    ctx.roundRect(headX - 0.21, headY + 0.08, 0.42, 0.075, 0.03);
-    ctx.fill();
-
-    // Monkey Tan Face Mask & Muzzle
-    ctx.fillStyle = '#fed7aa';
-    ctx.beginPath();
-    ctx.ellipse(headX + 0.02, headY - 0.05, 0.16, 0.12, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Expressive Skibidi Monkey Eyes (wide & focused on the banana)
-    for (const side of [-0.07, 0.09]) {
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
-      ctx.arc(headX + side, headY + 0.03, 0.048, 0, Math.PI * 2);
+      ctx.arc(0, -0.14, 0.48, Math.PI * 0.88, Math.PI * 2.12, false);
+      ctx.closePath();
       ctx.fill();
-
-      ctx.fillStyle = '#0f172a';
-      ctx.beginPath();
-      ctx.arc(headX + side + lookDirX * 0.3, headY + 0.03, 0.024, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.stroke();
     }
-
-    // Monkey Nostrils & Cheeky Grin
-    ctx.fillStyle = '#451a03';
-    ctx.beginPath();
-    ctx.arc(headX - 0.01, headY - 0.03, 0.015, 0, Math.PI * 2);
-    ctx.arc(headX + 0.04, headY - 0.03, 0.015, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.strokeStyle = '#451a03';
-    ctx.lineWidth = 0.024;
-    ctx.beginPath();
-    ctx.arc(headX + 0.015, headY - 0.06, 0.08, 0.15 * Math.PI, 0.85 * Math.PI);
-    ctx.stroke();
-
-    // 4. Porcelain Toilet Bowl & Pedestal (drawn in front of lower body)
-    // Pedestal base
-    ctx.fillStyle = '#cbd5e1';
-    ctx.strokeStyle = '#64748b';
-    ctx.lineWidth = 0.04;
-    ctx.beginPath();
-    ctx.roundRect(-0.34, -0.58, 0.68, 0.24, 0.08);
-    ctx.fill();
-    ctx.stroke();
-
-    // Rounded Porcelain Bowl
-    const bowlGrad = ctx.createRadialGradient(-0.1, -0.15, 0.05, 0, -0.18, 0.55);
-    bowlGrad.addColorStop(0, '#ffffff');
-    bowlGrad.addColorStop(0.65, '#f1f5f9');
-    bowlGrad.addColorStop(1, '#cbd5e1');
-
-    ctx.fillStyle = bowlGrad;
-    ctx.strokeStyle = '#64748b';
-    ctx.lineWidth = 0.04;
-    ctx.beginPath();
-    ctx.arc(0, -0.14, 0.48, Math.PI * 0.88, Math.PI * 2.12, false);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-
-    // Toilet Seat Rim
-    ctx.fillStyle = '#ffffff';
-    ctx.strokeStyle = '#94a3b8';
-    ctx.lineWidth = 0.035;
-    ctx.beginPath();
-    ctx.roundRect(-0.5, 0.02, 1.02, 0.13, 0.065);
-    ctx.fill();
-    ctx.stroke();
 
     ctx.restore();
 

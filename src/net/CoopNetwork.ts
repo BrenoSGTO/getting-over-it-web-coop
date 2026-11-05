@@ -5,6 +5,7 @@ export interface RemotePlayerState {
   peerId: string;
   name: string;
   color: string;
+  isHost?: boolean;
   // Smoothly interpolated positions rendered at 60fps
   potX: number;
   potY: number;
@@ -32,12 +33,14 @@ export interface RemotePlayerState {
 
 /**
  * Ultra-compact network wire format to minimize bandwidth (~35 bytes per state packet!):
- * - State tuple: ['s', peerId, potX*100, potY*100, potVX*20, potVY*20, tipX*100, tipY*100]
- * - Meta tuple:  ['m', peerId, name, color]
+ * - State tuple:    ['s', peerId, potX*100, potY*100, potVX*20, potVY*20, tipX*100, tipY*100]
+ * - Meta tuple:     ['m', peerId, name, color, isHostFlag]
+ * - Teleport tuple: ['t', senderPeerId, targetPeerId, destX*100, destY*100, destPlayerName]
  */
 export type CompactPacket =
   | ['s', string, number, number, number, number, number, number]
-  | ['m', string, string, string];
+  | ['m', string, string, string, number?]
+  | ['t', string, string, number, number, string];
 
 /**
  * Lightweight MQTT v3.1.1 over WSS Relay Client
@@ -265,6 +268,7 @@ export class CoopNetwork {
   public myName = 'Macaco';
   public myColor = '#f59e0b';
   public isConnected = false;
+  public isHost = false;
   private isConnectingCode = '';
 
   // Delta-compression & rate-limiting state
@@ -277,16 +281,19 @@ export class CoopNetwork {
 
   private onStatusChange?: (status: string, online: boolean, roomCode: string) => void;
   private onToast?: (msg: string) => void;
+  private onTeleportCommand?: (destX: number, destY: number, destName: string) => void;
 
   constructor(
     private world: planck.World,
     callbacks?: {
       onStatusChange?: (status: string, online: boolean, roomCode: string) => void;
       onToast?: (msg: string) => void;
+      onTeleportCommand?: (destX: number, destY: number, destName: string) => void;
     }
   ) {
     this.onStatusChange = callbacks?.onStatusChange;
     this.onToast = callbacks?.onToast;
+    this.onTeleportCommand = callbacks?.onTeleportCommand;
   }
 
   private generateShortCode(): string {
@@ -325,7 +332,8 @@ export class CoopNetwork {
   public joinRoom(rawCode: string): Promise<void> {
     const cleanCode = rawCode.trim().toUpperCase();
     const formattedCode = cleanCode.startsWith('GOI-') ? cleanCode : `GOI-${cleanCode}`;
-    return this.connectToRoom(formattedCode, false).then(() => {});
+    const wasHost = sessionStorage.getItem(`goi_host_${formattedCode}`) === '1';
+    return this.connectToRoom(formattedCode, wasHost).then(() => {});
   }
 
   private connectToRoom(code: string, asHost: boolean): Promise<string> {
@@ -336,6 +344,8 @@ export class CoopNetwork {
     this.cleanup();
     this.isConnectingCode = code;
     this.roomCode = code;
+    this.isHost = asHost;
+    sessionStorage.setItem(`goi_host_${code}`, asHost ? '1' : '0');
     this.onStatusChange?.(`Conectando à sala ${code}...`, false, '');
 
     return new Promise((resolve) => {
@@ -410,9 +420,38 @@ export class CoopNetwork {
 
   public sendMetadataPacket() {
     if (!this.isConnected) return;
-    const pkt: CompactPacket = ['m', this.myPeerId, this.myName.slice(0, 14), this.myColor];
+    const pkt: CompactPacket = [
+      'm',
+      this.myPeerId,
+      this.myName.slice(0, 14),
+      this.myColor,
+      this.isHost ? 1 : 0,
+    ];
     this.sendRawPacket(pkt);
     this.lastMetaSendTime = performance.now();
+  }
+
+  /**
+   * Host-only Party Teleport Command:
+   * Sends a ['t', senderPeerId, targetPeerId, destX*100, destY*100, destName] packet
+   * so the chosen player (either the host or any remote party member) teleports to the chosen destination!
+   */
+  public sendHostTeleportCommand(
+    targetPeerId: string,
+    destX: number,
+    destY: number,
+    destName: string
+  ) {
+    if (!this.isConnected || !this.isHost) return;
+    const pkt: CompactPacket = [
+      't',
+      this.myPeerId,
+      targetPeerId,
+      Math.round(destX * 100),
+      Math.round(destY * 100),
+      destName.slice(0, 14),
+    ];
+    this.sendRawPacket(pkt);
   }
 
   private sendRawPacket(pkt: CompactPacket) {
@@ -438,12 +477,33 @@ export class CoopNetwork {
     const now = performance.now();
 
     if (type === 'm') {
-      const [, , name, color] = pkt;
+      const [, , name, color, isHostFlag] = pkt;
       const remote = this.remotePlayers.get(peerId);
       if (remote) {
         remote.name = name || remote.name;
         remote.color = color || remote.color;
+        remote.isHost = isHostFlag === 1;
         remote.lastSeen = now;
+      }
+      return;
+    }
+
+    if (type === 't') {
+      const [, , targetPeerId, qDestX, qDestY, destName] = pkt;
+      const destX = qDestX / 100;
+      const destY = qDestY / 100;
+      if (targetPeerId === this.myPeerId) {
+        this.onTeleportCommand?.(destX, destY, destName || 'outro jogador');
+      } else {
+        const targetRemote = this.remotePlayers.get(targetPeerId);
+        if (targetRemote) {
+          targetRemote.potX = destX;
+          targetRemote.potY = destY;
+          targetRemote.netPotX = destX;
+          targetRemote.netPotY = destY;
+          targetRemote.netPotVX = 0;
+          targetRemote.netPotVY = 0;
+        }
       }
       return;
     }

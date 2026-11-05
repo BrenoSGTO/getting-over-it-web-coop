@@ -329,6 +329,53 @@ input[type="color"] {
   font-size: 0.76rem;
 }
 
+.host-tp-box {
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+.tp-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 6px 0;
+}
+
+.tp-select {
+  flex: 1;
+  min-width: 0;
+  background: rgba(30, 41, 59, 0.95);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #f8fafc;
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 0.74rem;
+  outline: none;
+}
+
+.tp-arrow {
+  color: #fbbf24;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.btn-full {
+  width: 100%;
+}
+
+.guest-tp-hint {
+  font-size: 0.71rem;
+  color: #94a3b8;
+  background: rgba(30, 41, 59, 0.5);
+  border-radius: 6px;
+  padding: 5px 8px;
+  margin-bottom: 10px;
+  text-align: center;
+}
+
 .checkbox-label {
   display: flex;
   align-items: center;
