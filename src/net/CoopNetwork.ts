@@ -70,15 +70,31 @@ export class CoopNetwork {
   }
 
   private getIceServers(): RTCIceServer[] {
+    // Public STUN + TURN Relay servers (UDP, TCP, and TLS on ports 80/443/3478)
+    // Specifically configured so players on 3G/4G/5G mobile data (Symmetric CGNAT) can connect!
     return [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
       { urls: 'stun:stun.cloudflare.com:3478' },
       {
         urls: [
           'turn:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:80?transport=tcp',
           'turn:openrelay.metered.ca:443',
           'turn:openrelay.metered.ca:443?transport=tcp',
+          'turns:openrelay.metered.ca:443?transport=tcp',
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayproject',
+      },
+      {
+        urls: [
+          'turn:global.relay.metered.ca:80',
+          'turn:global.relay.metered.ca:80?transport=tcp',
+          'turn:global.relay.metered.ca:443',
+          'turn:global.relay.metered.ca:443?transport=tcp',
+          'turns:global.relay.metered.ca:443?transport=tcp',
         ],
         username: 'openrelayproject',
         credential: 'openrelayproject',
@@ -96,8 +112,10 @@ export class CoopNetwork {
       this.onStatusChange?.(`Criando sala ${code}...`, false, '');
 
       this.peer = new Peer(peerId, {
+        debug: 1,
         config: {
           iceServers: this.getIceServers(),
+          iceCandidatePoolSize: 10,
         },
       });
 
@@ -139,8 +157,10 @@ export class CoopNetwork {
       this.onStatusChange?.(`Conectando à sala ${formattedCode}...`, false, '');
 
       this.peer = new Peer({
+        debug: 1,
         config: {
           iceServers: this.getIceServers(),
+          iceCandidatePoolSize: 10,
         },
       });
 

@@ -63,13 +63,13 @@ export class FoddyPlayer {
   public whooshThreshold = 1.5;
 
   // Static vs Sliding friction values
-  public readonly TIP_STATIC_FRICTION = 3.2;
-  public readonly TIP_SLIDING_FRICTION = 0.45;
-  public readonly POT_STATIC_FRICTION = 0.9;
-  public readonly POT_SLIDING_FRICTION = 0.2;
+  public readonly TIP_STATIC_FRICTION = 3.6;
+  public readonly TIP_SLIDING_FRICTION = 0.55;
+  public readonly POT_STATIC_FRICTION = 0.95;
+  public readonly POT_SLIDING_FRICTION = 0.22;
 
   private tipContactAnchor: planck.Vec2 | null = null;
-  private tipContactMaterial: SurfaceMaterial = 'rock';
+  private tipContactMaterial: SurfaceMaterial = 'wood';
   private tipIsTouchingTerrain = false;
 
   private potContactAnchor: planck.Vec2 | null = null;
@@ -83,14 +83,14 @@ export class FoddyPlayer {
   public particles: Particle[] = [];
   public telemetry: PlayerTelemetry = {
     isStaticFriction: false,
-    frictionValue: 0.45,
+    frictionValue: 0.55,
     strainPercent: 0,
     extensionMeters: 1.4,
     motorSpeedDeg: 0,
     sliderSpeed: 0,
   };
 
-  public readonly MAX_ARM_REACH = 2.75;
+  public readonly MAX_ARM_REACH = 2.85;
   public readonly MIN_ARM_REACH = 0.42;
   public readonly SHOULDER_OFFSET_Y = 0.35;
 
@@ -100,23 +100,21 @@ export class FoddyPlayer {
     spawnY: number,
     private sounds: SoundSystem
   ) {
-    // 1. CAULDRON / POT BODY
-    // In Getting Over It, the player's core body has fixedRotation so shoulder motor
-    // torque swings the hammer and lifts the player instead of spinning the pot in circles.
+    // 1. SKIBIDI TOILET / POT BODY
     this.potBody = this.world.createBody({
       type: 'dynamic',
       position: planck.Vec2(spawnX, spawnY),
       fixedRotation: true,
-      linearDamping: 0.12,
+      linearDamping: 0.14,
       angularDamping: 2.0,
       bullet: true,
     });
 
-    // Lower rounded base of the cauldron
+    // Lower rounded base of the porcelain toilet bowl
     this.potBottomFixture = this.potBody.createFixture(
-      planck.Circle(planck.Vec2(0, -0.18), 0.52),
+      planck.Circle(planck.Vec2(0, -0.18), 0.5),
       {
-        density: 4.2,
+        density: 3.1,
         friction: this.POT_SLIDING_FRICTION,
         restitution: 0.0,
         filterGroupIndex: -1, // Never collide with own arm/hammer
@@ -124,11 +122,11 @@ export class FoddyPlayer {
     );
     this.potBottomFixture.setUserData({ isPot: true });
 
-    // Upper rim of the cauldron
+    // Upper rim of the toilet bowl
     const rimFixture = this.potBody.createFixture(
-      planck.Box(0.46, 0.22, planck.Vec2(0, 0.1), 0),
+      planck.Box(0.44, 0.2, planck.Vec2(0, 0.08), 0),
       {
-        density: 1.4,
+        density: 1.1,
         friction: 0.2,
         restitution: 0.0,
         filterGroupIndex: -1,
@@ -154,12 +152,10 @@ export class FoddyPlayer {
     this.hubBody.setMassData({
       mass: 1.5,
       center: planck.Vec2(0, 0),
-      I: 6.5,
+      I: 7.5,
     });
 
-    // 3. HAMMER TIP BODY
-    // IMPORTANT: Created at shoulderPos with angle 0 when initializing PrismaticJoint so
-    // localAnchorA = (0,0) and localAnchorB = (0,0), making jointTranslation == exact arm reach!
+    // 3. BANANA PICKAXE TIP BODY
     this.tipBody = this.world.createBody({
       type: 'dynamic',
       position: shoulderPos,
@@ -170,11 +166,11 @@ export class FoddyPlayer {
       angularDamping: 1.5,
     });
 
-    // Hammer head shape matching visual orientation (0.26m along shaft X, 0.50m across head Y)
+    // Banana Pickaxe head shape (0.26m along shaft X, 0.54m across curved banana blades Y)
     this.tipFixture = this.tipBody.createFixture(
-      planck.Box(0.13, 0.24),
+      planck.Box(0.13, 0.26),
       {
-        density: 2.8,
+        density: 2.5,
         friction: this.TIP_STATIC_FRICTION,
         restitution: 0.0,
         filterGroupIndex: -1,
@@ -182,11 +178,11 @@ export class FoddyPlayer {
     );
     this.tipFixture.setUserData({ isHammerTip: true });
 
-    // Top pick hook nose on the hammer head for catching ledges cleanly
+    // Top banana tip hook for catching branches and vine knots cleanly
     const topHookFix = this.tipBody.createFixture(
-      planck.Circle(planck.Vec2(0, 0.23), 0.12),
+      planck.Circle(planck.Vec2(-0.04, 0.26), 0.14),
       {
-        density: 1.2,
+        density: 1.1,
         friction: this.TIP_STATIC_FRICTION,
         restitution: 0.0,
         filterGroupIndex: -1,
@@ -194,11 +190,11 @@ export class FoddyPlayer {
     );
     topHookFix.setUserData({ isHammerTip: true });
 
-    // Bottom claw hook on the hammer head for hooking under-ledges
+    // Bottom banana tip hook for under-hooking vines and branches
     const botHookFix = this.tipBody.createFixture(
-      planck.Circle(planck.Vec2(0, -0.23), 0.12),
+      planck.Circle(planck.Vec2(-0.04, -0.26), 0.14),
       {
-        density: 1.2,
+        density: 1.1,
         friction: this.TIP_STATIC_FRICTION,
         restitution: 0.0,
         filterGroupIndex: -1,
@@ -206,12 +202,12 @@ export class FoddyPlayer {
     );
     botHookFix.setUserData({ isHammerTip: true });
 
-    // 4. HINGE JOINT (hj) - Rotates the arm around the shoulder
+    // 4. HINGE JOINT (hj) - Rotates the arm around the monkey's shoulder
     this.hingeJoint = this.world.createJoint(
       planck.RevoluteJoint(
         {
           enableMotor: true,
-          maxMotorTorque: 3800.0,
+          maxMotorTorque: 4800.0,
           motorSpeed: 0,
           collideConnected: false,
         },
@@ -221,7 +217,7 @@ export class FoddyPlayer {
       )
     )!;
 
-    // 5. SLIDER JOINT (sj) - Extends/retracts the hammer tip along the hub's X axis
+    // 5. SLIDER JOINT (sj) - Extends/retracts the banana pickaxe along the shaft
     this.sliderJoint = this.world.createJoint(
       planck.PrismaticJoint(
         {
@@ -229,7 +225,7 @@ export class FoddyPlayer {
           lowerTranslation: this.MIN_ARM_REACH,
           upperTranslation: this.MAX_ARM_REACH,
           enableMotor: true,
-          maxMotorForce: 3200.0,
+          maxMotorForce: 3800.0,
           motorSpeed: 0,
           collideConnected: false,
         },

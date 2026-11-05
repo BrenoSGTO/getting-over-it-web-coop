@@ -8,7 +8,6 @@ export interface TerrainBlock {
   material: SurfaceMaterial;
   color: string;
   strokeColor: string;
-  /** Vertices in local space around (x, y) or box/circle definition */
   shapeType: 'polygon' | 'box' | 'circle';
   x: number;
   y: number;
@@ -27,14 +26,23 @@ export interface Signpost {
   subtitle: string;
 }
 
+export interface HangingVine {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  sag: number;
+}
+
 export class LevelBuilder {
   public blocks: TerrainBlock[] = [];
   public signposts: Signpost[] = [];
-  public spawnPoint = { x: 0, y: 1.5 };
-  public summitY = 62;
+  public decorativeVines: HangingVine[] = [];
+  public spawnPoint = { x: 0, y: 1.2 };
+  public summitY = 48;
 
   constructor(private world: planck.World) {
-    this.buildValidationMountain();
+    this.buildJungleMountain();
   }
 
   private addBox(
@@ -44,14 +52,19 @@ export class LevelBuilder {
     width: number,
     height: number,
     angleDeg = 0,
-    material: SurfaceMaterial = 'rock',
+    material: SurfaceMaterial = 'wood',
     label?: string
   ) {
+    // Jungle & Vines color palette:
+    // - wood: Giant Jungle Tree Branches & Roots
+    // - rock: Mossy Jungle Temple Stones
+    // - metal: Thick Braided Vines & Bamboo Grips (High friction!)
+    // - ice: Wet Mossy Log (Moderate slip)
     const palette: Record<SurfaceMaterial, { fill: string; stroke: string; friction: number }> = {
-      rock: { fill: '#334155', stroke: '#64748b', friction: 0.95 },
-      wood: { fill: '#78350f', stroke: '#b45309', friction: 0.85 },
-      metal: { fill: '#1e293b', stroke: '#38bdf8', friction: 0.7 },
-      ice: { fill: '#0ea5e9', stroke: '#bae6fd', friction: 0.12 },
+      wood: { fill: '#5c2d0c', stroke: '#a16207', friction: 1.1 },
+      rock: { fill: '#365314', stroke: '#65a30d', friction: 1.05 },
+      metal: { fill: '#14532d', stroke: '#4ade80', friction: 1.25 },
+      ice: { fill: '#115e59', stroke: '#2dd4bf', friction: 0.42 },
     };
     const style = palette[material];
     const angle = (angleDeg * Math.PI) / 180;
@@ -90,13 +103,13 @@ export class LevelBuilder {
     x: number,
     y: number,
     radius: number,
-    material: SurfaceMaterial = 'rock'
+    material: SurfaceMaterial = 'metal'
   ) {
     const palette: Record<SurfaceMaterial, { fill: string; stroke: string; friction: number }> = {
-      rock: { fill: '#475569', stroke: '#94a3b8', friction: 0.95 },
-      wood: { fill: '#78350f', stroke: '#d97706', friction: 0.85 },
-      metal: { fill: '#0f172a', stroke: '#f59e0b', friction: 0.8 },
-      ice: { fill: '#0284c7', stroke: '#e0f2fe', friction: 0.1 },
+      wood: { fill: '#713f12', stroke: '#ca8a04', friction: 1.1 },
+      rock: { fill: '#3f6212', stroke: '#84cc16', friction: 1.05 },
+      metal: { fill: '#15803d', stroke: '#86efac', friction: 1.3 },
+      ice: { fill: '#0f766e', stroke: '#5eead4', friction: 0.42 },
     };
     const style = palette[material];
 
@@ -125,110 +138,142 @@ export class LevelBuilder {
     });
   }
 
-  private buildValidationMountain() {
-    // =====================================================
-    // BASE FLOOR & SPAWN VALLEY (0m - 5m)
-    // =====================================================
-    this.addBox('ground-main', 0, -1.5, 42, 3, 0, 'rock');
-    this.addBox('wall-left-bound', -20, 12, 3, 30, 0, 'rock');
-    this.addBox('wall-right-bound', 20, 12, 3, 30, 0, 'rock');
+  private addVineDecoration(x1: number, y1: number, x2: number, y2: number, sag = 0.8) {
+    this.decorativeVines.push({ x1, y1, x2, y2, sag });
+  }
 
-    // Starting Tree / Dead Branch (Classic Getting Over It warm-up)
-    this.addCircle('start-boulder-1', 3.2, 0.4, 0.95, 'rock');
-    this.addBox('start-trunk', 5.2, 1.8, 1.1, 3.8, -12, 'wood');
-    this.addBox('start-branch-left', 3.6, 3.3, 2.8, 0.45, 16, 'wood');
-    this.addBox('start-branch-right', 7.2, 4.1, 3.2, 0.45, 12, 'wood');
-    this.addCircle('start-knot', 8.8, 4.5, 0.65, 'wood');
+  /**
+   * Builds a well-paced, 100% completable Jungle & Vines map (0m -> 48m)
+   * Every step is spaced 1.3m - 1.9m apart (well within the 2.85m Banana Pickaxe reach),
+   * with wide safety branches at each section so slips don't reset all progress.
+   */
+  private buildJungleMountain() {
+    // =====================================================
+    // SECTION 1: RAÍZES DA GRANDE FIGUEIRA (0m - 10m)
+    // Gentle staircase of mossy stones and thick tree roots
+    // =====================================================
+    this.addBox('jungle-floor', 0, -1.5, 46, 3, 0, 'rock');
+    this.addBox('wall-left', -21, 24, 3, 56, 0, 'wood');
+    this.addBox('wall-right', 21, 24, 3, 56, 0, 'wood');
+
+    // Easy warm-up steps to the right (each ~1.3m higher, ~1.8m horizontally)
+    this.addBox('root-step-1', 2.4, 0.5, 2.4, 0.7, 5, 'wood');
+    this.addBox('root-step-2', 4.6, 1.7, 2.5, 0.7, 6, 'wood');
+    this.addCircle('vine-knot-1', 6.6, 3.0, 0.65, 'metal');
+    this.addBox('branch-1', 8.8, 4.2, 3.4, 0.75, 4, 'wood');
+    this.addCircle('vine-knot-2', 11.0, 5.6, 0.65, 'metal');
+    this.addBox('branch-2', 9.0, 7.2, 3.6, 0.75, -5, 'wood');
+    this.addCircle('vine-knot-3', 6.6, 8.6, 0.65, 'metal');
+
+    // Wide Safety Terrace 1 at 10m!
+    this.addBox('terrace-1', 3.0, 10.0, 5.8, 0.95, 0, 'wood');
+
+    this.addVineDecoration(2.4, 0.5, 6.6, 3.0, 0.6);
+    this.addVineDecoration(6.6, 3.0, 11.0, 5.6, 0.7);
+    this.addVineDecoration(11.0, 5.6, 6.6, 8.6, 0.8);
 
     this.signposts.push({
       x: 0,
-      y: 2.2,
-      title: '1. A Árvore Seca',
-      subtitle: 'Enganche a marreta no galho e puxe o mouse para baixo',
+      y: 2.3,
+      title: '🍌 1. Raízes da Selva',
+      subtitle: 'Enganche a Picareta de Banana nos galhos e nós de cipó verdes!',
     });
 
     // =====================================================
-    // SECTION 2: THE ROCK STEPS & CHIMNEY (5m - 18m)
+    // SECTION 2: PONTES DE CIPÓ (10m - 20m)
+    // Vine knots & wide jungle branches heading left
     // =====================================================
-    this.addBox('ledge-1', 11.5, 5.2, 4.5, 1.2, 0, 'rock');
-    this.addCircle('boulder-step-1', 13.5, 6.2, 1.1, 'rock');
-    this.addBox('chimney-right', 15.2, 10.5, 1.4, 8.5, 0, 'rock');
-    this.addBox('chimney-left', 11.4, 11.2, 1.3, 6.8, 0, 'rock');
-    // Small pegs inside the chimney for hammer leverage
-    this.addCircle('chimney-peg-1', 14.3, 8.2, 0.45, 'metal');
-    this.addCircle('chimney-peg-2', 12.2, 10.4, 0.45, 'metal');
-    this.addCircle('chimney-peg-3', 14.3, 12.6, 0.45, 'metal');
+    this.addCircle('vine-bridge-1', -0.2, 11.4, 0.7, 'metal');
+    this.addBox('jungle-limb-1', -2.8, 12.8, 3.4, 0.75, -6, 'wood');
+    this.addCircle('vine-bridge-2', -5.2, 14.3, 0.7, 'metal');
+    this.addBox('jungle-limb-2', -7.8, 15.8, 3.6, 0.75, -4, 'wood');
+    this.addCircle('vine-bridge-3', -5.6, 17.4, 0.7, 'metal');
+    this.addCircle('vine-bridge-4', -3.4, 18.8, 0.7, 'metal');
 
-    this.addBox('chimney-exit-plat', 9.2, 14.5, 4.8, 1.1, 0, 'rock');
+    // Wide Safety Terrace 2 at 20m!
+    this.addBox('terrace-2', 0.2, 20.2, 6.2, 0.95, 0, 'rock');
+
+    this.addVineDecoration(3.0, 10.0, -2.8, 12.8, 0.9);
+    this.addVineDecoration(-2.8, 12.8, -7.8, 15.8, 0.9);
+    this.addVineDecoration(-7.8, 15.8, 0.2, 20.2, 1.1);
 
     this.signposts.push({
-      x: 13.3,
-      y: 7.0,
-      title: '2. A Chaminé do Diógenes',
-      subtitle: 'Alterne a marreta entre os pinos de metal ou dê um pogo jump!',
+      x: 3.0,
+      y: 11.8,
+      title: '🌿 2. Cipós da Macacada',
+      subtitle: 'Os nós de cipó verdes têm super aderência para puxar a privada!',
     });
 
     // =====================================================
-    // SECTION 3: THE CONSTRUCTION CRANE & OARS (15m - 30m)
+    // SECTION 3: COPA DAS ÁRVORES GIGANTES (20m - 30m)
+    // Lush canopy platforms & vine rings heading right
     // =====================================================
-    this.addBox('beam-1', 4.8, 16.5, 4.2, 0.55, -14, 'metal');
-    this.addCircle('gear-1', 1.8, 18.2, 0.9, 'metal');
-    this.addBox('beam-2', -2.0, 20.0, 4.6, 0.55, -15, 'metal');
-    this.addCircle('gear-2', -5.2, 21.8, 0.85, 'metal');
-    this.addBox('crane-rest', -8.8, 23.0, 4.2, 1.0, 0, 'wood');
+    this.addBox('canopy-step-1', 3.8, 21.6, 3.2, 0.75, 6, 'wood');
+    this.addCircle('canopy-vine-1', 6.2, 23.1, 0.7, 'metal');
+    this.addBox('canopy-step-2', 8.6, 24.6, 3.4, 0.75, 4, 'wood');
+    this.addCircle('canopy-vine-2', 6.4, 26.2, 0.7, 'metal');
+    this.addBox('canopy-step-3', 3.8, 27.7, 3.4, 0.75, -5, 'wood');
+    this.addCircle('canopy-vine-3', 1.4, 29.1, 0.7, 'metal');
 
-    // Vertical Hook Climb
-    this.addBox('pillar-left', -11.5, 27.5, 1.2, 8.5, 0, 'rock');
-    this.addBox('hook-1', -9.8, 25.5, 1.8, 0.4, 8, 'metal');
-    this.addBox('hook-2', -7.2, 27.8, 2.0, 0.4, -10, 'metal');
-    this.addBox('hook-3', -9.6, 30.2, 2.0, 0.4, 8, 'metal');
-    this.addBox('plat-32', -5.0, 32.0, 4.8, 1.1, 0, 'rock');
+    // Wide Safety Terrace 3 at 30.5m!
+    this.addBox('terrace-3', -2.2, 30.5, 6.2, 0.95, 0, 'wood');
+
+    this.addVineDecoration(0.2, 20.2, 8.6, 24.6, 1.2);
+    this.addVineDecoration(8.6, 24.6, -2.2, 30.5, 1.2);
 
     this.signposts.push({
-      x: 2.0,
-      y: 19.8,
-      title: '3. Vigas Metálicas',
-      subtitle: 'Cuidado para não escorregar de volta para a base!',
+      x: 0.2,
+      y: 22.0,
+      title: '🌴 3. Copa da Figueira',
+      subtitle: 'Use os terraços largos para descansar ou puxar seu amigo no Co-op!',
     });
 
     // =====================================================
-    // SECTION 4: ORANGE HELL / THE ANVIL CLIFF (32m - 48m)
+    // SECTION 4: TEMPLO MUSGOSO DA SELVA (30.5m - 40m)
+    // Ancient mossy stone steps + wet log + vine hooks
     // =====================================================
-    this.addCircle('orange-rock-1', -1.2, 33.8, 1.15, 'rock');
-    this.addCircle('orange-rock-2', 2.2, 35.8, 1.05, 'rock');
-    this.addCircle('orange-rock-3', 5.6, 38.0, 1.1, 'rock');
-    this.addBox('anvil-ledge', 9.2, 40.2, 3.6, 0.9, 0, 'metal');
+    this.addBox('temple-step-1', -5.8, 32.0, 3.0, 0.8, 0, 'rock');
+    this.addCircle('temple-vine-1', -8.0, 33.5, 0.7, 'metal');
+    this.addBox('temple-step-2', -5.8, 35.1, 3.2, 0.8, 0, 'rock');
+    // Gentle wet mossy log with a big vine knot right above it for easy grip
+    this.addBox('wet-moss-log', -2.6, 36.6, 3.6, 0.7, 12, 'ice');
+    this.addCircle('saver-vine-knot', -2.4, 38.0, 0.72, 'metal');
+    this.addCircle('temple-vine-2', 0.0, 39.2, 0.7, 'metal');
 
-    // Steep Ice Slope + Rock Grips
-    this.addBox('ice-slope', 5.0, 44.0, 6.5, 0.7, -32, 'ice');
-    this.addCircle('ice-saver-knob', 7.4, 43.2, 0.48, 'metal');
-    this.addCircle('ice-top-knob', 2.2, 46.5, 0.65, 'rock');
-    this.addBox('pre-summit-ledge', -1.5, 48.0, 4.5, 1.1, 0, 'wood');
+    // Wide Safety Terrace 4 at 40.5m!
+    this.addBox('terrace-4', 3.4, 40.5, 6.0, 0.95, 0, 'rock');
+
+    this.addVineDecoration(-2.2, 30.5, -8.0, 33.5, 0.9);
+    this.addVineDecoration(-5.8, 35.1, 3.4, 40.5, 1.1);
 
     this.signposts.push({
-      x: 9.2,
-      y: 41.8,
-      title: '4. Penhasco & Rampa de Gelo',
-      subtitle: 'O gelo quase não tem atrito — use os pinos de ferro!',
+      x: -2.2,
+      y: 32.3,
+      title: '🗿 4. Ruínas do Templo Musgoso',
+      subtitle: 'Enganche no nó de cipó acima do tronco úmido para subir fácil!',
     });
 
     // =====================================================
-    // SECTION 5: FINAL GAUNTLET & GOLDEN SUMMIT (48m - 62m)
+    // SECTION 5: ALTAR DA BANANA DOURADA (40.5m - 48m)
+    // Final triumphant vine staircase to the Golden Banana Summit
     // =====================================================
-    this.addCircle('final-step-1', -4.8, 50.4, 0.75, 'rock');
-    this.addCircle('final-step-2', -2.2, 53.0, 0.7, 'metal');
-    this.addCircle('final-step-3', 0.8, 55.6, 0.7, 'metal');
-    this.addCircle('final-step-4', -1.5, 58.4, 0.75, 'rock');
+    this.addCircle('final-vine-1', 5.8, 42.0, 0.72, 'metal');
+    this.addBox('final-branch-1', 3.6, 43.5, 3.4, 0.75, -5, 'wood');
+    this.addCircle('final-vine-2', 1.4, 45.0, 0.72, 'metal');
+    this.addCircle('final-vine-3', -0.6, 46.5, 0.72, 'metal');
 
-    // Summit Crown Platform
-    this.addBox('summit-platform', 0, 61.5, 8.0, 1.4, 0, 'metal', 'TOPO DA MONTANHA');
-    this.addCircle('summit-trophy', 0, 63.0, 0.8, 'metal');
+    // Golden Banana Summit Platform at 48m!
+    this.addBox('summit-platform', 0, 48.0, 9.0, 1.3, 0, 'metal', 'ALTAR DA BANANA DOURADA');
+    this.addCircle('summit-trophy', 0, 49.5, 0.85, 'wood');
+
+    this.addVineDecoration(3.4, 40.5, 5.8, 42.0, 0.5);
+    this.addVineDecoration(3.6, 43.5, 0, 48.0, 0.8);
 
     this.signposts.push({
       x: 0,
-      y: 64.5,
-      title: '🏆 TOPO DA MONTANHA (62m)',
-      subtitle: 'Parabéns! Você dominou a física original do Getting Over It!',
+      y: 51.2,
+      title: '👑 TOPO DA FLORESTA (48m)',
+      subtitle: 'GG! O Macaco Skibidi conquistou o Altar da Banana Dourada!',
     });
   }
 }

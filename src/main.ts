@@ -187,15 +187,16 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.key.toLowerCase() === 'r') {
     player.teleportTo(level.spawnPoint.x, level.spawnPoint.y);
-    showToast('Reiniciado na base da montanha!');
+    localStorage.removeItem('goi_jungle_saved_pos_v2');
+    showToast('Reiniciado na base da floresta!');
   }
 });
 
 // ============================================================================
-// 5. SAVIOUR.CS AUTO-SAVE &FIXED-TIMESTEP GAME LOOP (60Hz)
+// 5. SAVIOUR.CS AUTO-SAVE & FIXED-TIMESTEP GAME LOOP (60Hz)
 // ============================================================================
 let bestHeight = parseFloat(localStorage.getItem('goi_best_height') || '0') || 0;
-const savedPosJson = localStorage.getItem('goi_saved_pos');
+const savedPosJson = localStorage.getItem('goi_jungle_saved_pos_v2');
 if (savedPosJson) {
   try {
     const sp = JSON.parse(savedPosJson);
@@ -248,7 +249,7 @@ function gameLoop(now: number) {
     // Auto-save position every 60 frames (1s), matching Saviour.Update (IL_0070)
     if (frameCounter % 60 === 0) {
       const potPos = player.potBody.getPosition();
-      localStorage.setItem('goi_saved_pos', JSON.stringify({ x: potPos.x, y: potPos.y }));
+      localStorage.setItem('goi_jungle_saved_pos_v2', JSON.stringify({ x: potPos.x, y: potPos.y }));
     }
 
     accumulator -= FIXED_DT;
