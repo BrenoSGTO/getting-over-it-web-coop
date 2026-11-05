@@ -1,0 +1,20 @@
+{
+  "name": "getting-over-it-web-coop",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "peerjs": "^1.5.4",
+    "planck-js": "^1.0.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8"
+  }
+}

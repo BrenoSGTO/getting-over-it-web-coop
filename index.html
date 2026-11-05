@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Climbing Over It — Web Co-op (REA Physics Clone)</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <canvas id="game-canvas"></canvas>
+
+    <!-- HUD Top Left: Altitude & Physics Telemetry -->
+    <div id="hud-left" class="hud-panel">
+      <div class="brand-row">
+        <span class="badge-rea">REA DECOMPILED PHYSICS</span>
+        <h1>Climbing Over It <span class="sub">Web Co-op</span></h1>
+      </div>
+      <div class="stats-grid">
+        <div class="stat-box">
+          <span class="stat-label">ALTURA ATUAL</span>
+          <span id="stat-height" class="stat-value">0.0 m</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-label">RECORDE</span>
+          <span id="stat-best" class="stat-value">0.0 m</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-label">TEMPO</span>
+          <span id="stat-time" class="stat-value">00:00</span>
+        </div>
+      </div>
+
+      <!-- REA Physics Inspector Live Bars -->
+      <div class="telemetry-section">
+        <div class="telemetry-title">Telemetria Original (PlayerControl.cs)</div>
+        <div class="bar-row">
+          <span>Atrito Ponta (<code id="txt-friction-mode">STATIC 1.5</code>)</span>
+          <div class="bar-track"><div id="bar-friction" class="bar-fill fill-green" style="width: 100%"></div></div>
+        </div>
+        <div class="bar-row">
+          <span>Força Junta / Strain (<code id="txt-strain">0%</code>)</span>
+          <div class="bar-track"><div id="bar-strain" class="bar-fill fill-orange" style="width: 10%"></div></div>
+        </div>
+        <div class="bar-row">
+          <span>Extensão Braço (<code id="txt-extension">0.00m</code>)</span>
+          <div class="bar-track"><div id="bar-extension" class="bar-fill fill-blue" style="width: 50%"></div></div>
+        </div>
+      </div>
+
+      <div class="controls-hint">
+        <div><strong>Clique na tela</strong> para travar o mouse (Pointer Lock)</div>
+        <div><strong>ESC</strong> libera o mouse • <strong>R</strong> reinicia no pé da montanha</div>
+        <div class="slider-control">
+          <label for="sens-slider">Sensibilidade Mouse: <span id="sens-val">1.0x</span></label>
+          <input type="range" id="sens-slider" min="0.3" max="2.5" step="0.1" value="1.0" />
+        </div>
+      </div>
+    </div>
+
+    <!-- HUD Top Right: Co-op Multiplayer Panel -->
+    <div id="hud-right" class="hud-panel">
+      <div class="coop-header">
+        <span class="status-dot" id="net-dot"></span>
+        <strong id="net-status-text">Modo Solo / Pronto para Co-op</strong>
+      </div>
+
+      <div class="coop-field-row">
+        <input type="text" id="player-name-input" placeholder="Seu Nome" maxlength="14" value="Escalador" />
+        <input type="color" id="player-color-input" value="#f59e0b" title="Cor do Personagem" />
+      </div>
+
+      <div id="coop-lobby-controls">
+        <button id="btn-create-room" class="btn btn-primary">Criar Sala Co-op</button>
+        <div class="join-row">
+          <input type="text" id="room-code-input" placeholder="Código (ex: GOI-A1B2)" maxlength="12" />
+          <button id="btn-join-room" class="btn btn-secondary">Entrar</button>
+        </div>
+      </div>
+
+      <div id="coop-active-room" class="hidden">
+        <div class="room-code-banner">
+          <div>
+            <span class="small-label">CÓDIGO DA SALA</span>
+            <strong id="active-room-code">---</strong>
+          </div>
+          <button id="btn-copy-link" class="btn btn-small">Copiar Link</button>
+        </div>
+
+        <div class="coop-options">
+          <label class="checkbox-label" title="Quando ativado, uma corda elástica prende seu caldeirão ao do amigo!">
+            <input type="checkbox" id="chk-tether" />
+            <span>Corda Cooperativa (Elástica)</span>
+          </label>
+          <button id="btn-tp-friend" class="btn btn-small btn-outline" title="Teleportar para perto do amigo">Ir até Amigo</button>
+        </div>
+
+        <div class="players-list-title">JOGADORES NA MONTANHA (<span id="player-count">1</span>)</div>
+        <ul id="players-list"></ul>
+      </div>
+    </div>
+
+    <!-- Center Pointer Lock Banner -->
+    <div id="pointer-lock-overlay" class="overlay-banner">
+      <div class="overlay-card">
+        <h2>Clique na tela para controlar a Marreta</h2>
+        <p>Mova o mouse para girar e esticar o martelo. Apoie nas rochas e empurre para baixo para alavancar o caldeirão!</p>
+        <span class="key-pill">Clique Esquerdo = Ativar Controle</span>
+      </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast-container"></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.rar
+*.zip
+*.7z
+extracted_dlls/
+rea_*.json
+.DS_Store
+.env
+.env.*
