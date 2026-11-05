@@ -145,7 +145,9 @@ class MqttWssRelay {
       0x02,
       0x00, 0x3c,
     ]);
-    const payload = this.encodeString(`goi_${this.clientId}`);
+    const payload = this.encodeString(
+      `goi_${this.clientId}_${Math.random().toString(36).substring(2, 6)}`
+    );
     const remLen = varHeader.length + payload.length;
     const remLenBytes = this.encodeLength(remLen);
 
@@ -250,8 +252,16 @@ export class CoopNetwork {
   public remotePlayers: Map<string, RemotePlayerState> = new Map();
 
   public roomCode = '';
-  // Short 4-char peer ID saves bandwidth in every packet
-  public myPeerId = Math.random().toString(36).substring(2, 6);
+  // Persist peerId in sessionStorage so multiple tabs on the same PC get distinct IDs,
+  // while a single tab keeps a stable ID across reconnects
+  public myPeerId = (() => {
+    let id = sessionStorage.getItem('goi_session_peer_id');
+    if (!id) {
+      id = Math.random().toString(36).substring(2, 6);
+      sessionStorage.setItem('goi_session_peer_id', id);
+    }
+    return id;
+  })();
   public myName = 'Macaco';
   public myColor = '#f59e0b';
   public isConnected = false;
@@ -457,13 +467,18 @@ export class CoopNetwork {
       }
 
       const dtNet = Math.max((now - remote.lastPacketTime) / 1000, 0.04);
-      remote.netTipVX = Math.max(-25, Math.min(25, (tipX - remote.netTipX) / dtNet));
-      remote.netTipVY = Math.max(-25, Math.min(25, (tipY - remote.netTipY) / dtNet));
+      const rawTipVX = (tipX - remote.netTipX) / dtNet;
+      const rawTipVY = (tipY - remote.netTipY) / dtNet;
+
+      // Velocity deadzone: if the remote player/hammer is essentially stationary (< 0.12 m/s),
+      // clamp velocity to 0 so dead-reckoning never causes micro-oscillation while standing still!
+      remote.netTipVX = Math.abs(rawTipVX) < 0.12 ? 0 : Math.max(-20, Math.min(20, rawTipVX));
+      remote.netTipVY = Math.abs(rawTipVY) < 0.12 ? 0 : Math.max(-20, Math.min(20, rawTipVY));
 
       remote.netPotX = potX;
       remote.netPotY = potY;
-      remote.netPotVX = potVX;
-      remote.netPotVY = potVY;
+      remote.netPotVX = Math.abs(potVX) < 0.12 ? 0 : potVX;
+      remote.netPotVY = Math.abs(potVY) < 0.12 ? 0 : potVY;
       remote.netTipX = tipX;
       remote.netTipY = tipY;
       remote.lastPacketTime = now;
@@ -612,15 +627,15 @@ export class CoopNetwork {
       }
 
       if (r.potBody && r.tipBody) {
-        // Time elapsed since the last network packet arrived (capped at 120ms for prediction)
-        const ageSec = Math.min(Math.max((now - r.lastPacketTime) / 1000, 0), 0.12);
+        // Time elapsed since the last network packet arrived (capped at 75ms for gentle prediction)
+        const ageSec = Math.min(Math.max((now - r.lastPacketTime) / 1000, 0), 0.075);
 
-        // Dead-reckoning predicted position using velocity at snapshot time
-        const predPotX = r.netPotX + r.netPotVX * ageSec;
-        const predPotY = r.netPotY + r.netPotVY * ageSec;
+        // Gentle damped velocity prediction (50% weight) so it never overshoots and snaps back
+        const predPotX = r.netPotX + r.netPotVX * ageSec * 0.5;
+        const predPotY = r.netPotY + r.netPotVY * ageSec * 0.5;
 
-        const predTipX = r.netTipX + r.netTipVX * ageSec * 0.75;
-        const predTipY = r.netTipY + r.netTipVY * ageSec * 0.75;
+        const predTipX = r.netTipX + r.netTipVX * ageSec * 0.4;
+        const predTipY = r.netTipY + r.netTipVY * ageSec * 0.4;
 
         // Exponential smoothing (frame-rate independent) toward the moving predicted target
         const potBlend = 1.0 - Math.exp(-16.0 * dt);
@@ -645,17 +660,14 @@ export class CoopNetwork {
         r.potAngle += (targetTilt - r.potAngle) * 0.2;
         r.tipAngle = Math.atan2(r.tipY - (r.potY + 0.35), r.tipX - r.potX);
 
-        // Update kinematic bodies with smooth velocity so collisions feel solid
-        const curPot = r.potBody.getPosition();
-        r.potBody.setLinearVelocity(
-          planck.Vec2((r.potX - curPot.x) / dt, (r.potY - curPot.y) / dt)
-        );
+        // Update kinematic bodies cleanly at the exact interpolated position.
+        // IMPORTANT: Do NOT set linearVelocity on kinematic bodies AFTER also setting their position,
+        // because world.step(dt) integrates kinematic velocity on top of setPosition, which caused
+        // the body to jump ahead during world.step and snap back on the next tick (ghosting / double image)!
+        r.potBody.setLinearVelocity(planck.Vec2(0, 0));
         r.potBody.setPosition(planck.Vec2(r.potX, r.potY));
 
-        const curTip = r.tipBody.getPosition();
-        r.tipBody.setLinearVelocity(
-          planck.Vec2((r.tipX - curTip.x) / dt, (r.tipY - curTip.y) / dt)
-        );
+        r.tipBody.setLinearVelocity(planck.Vec2(0, 0));
         r.tipBody.setPosition(planck.Vec2(r.tipX, r.tipY));
 
         // Optional Elastic Co-op Vine Tether

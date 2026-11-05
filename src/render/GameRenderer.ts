@@ -207,17 +207,15 @@ export class GameRenderer {
       }
     }
 
-    // 6. Draw Remote Co-op Players
+    // 6. Draw Remote Co-op Players (always use exact interpolated r.potX/r.potY & r.tipX/r.tipY)
     for (const r of remotePlayers.values()) {
-      const rPotPos = r.potBody ? r.potBody.getPosition() : { x: r.potX, y: r.potY };
-      const rTipPos = r.tipBody ? r.tipBody.getPosition() : { x: r.tipX, y: r.tipY };
       this.drawClimberCharacter(
         ctx,
-        rPotPos.x,
-        rPotPos.y,
+        r.potX,
+        r.potY,
         r.potAngle,
-        rTipPos.x,
-        rTipPos.y,
+        r.tipX,
+        r.tipY,
         r.color,
         r.name,
         true,
