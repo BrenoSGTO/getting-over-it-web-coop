@@ -1,6 +1,6 @@
 import * as planck from 'planck-js';
 import { FoddyPlayer } from '../physics/FoddyPlayer';
-import { LevelBuilder } from '../physics/LevelBuilder';
+import { LevelBuilder, SurfaceMaterial } from '../physics/LevelBuilder';
 import { RemotePlayerState } from '../net/CoopNetwork';
 
 export class GameRenderer {
@@ -10,12 +10,34 @@ export class GameRenderer {
   public camVel = { x: 0, y: 0 };
   public pixelsPerMeter = 46; // Ortho zoom scale
   private monkeyToiletSprite: HTMLCanvasElement | null = null;
+  private slopPatterns: Partial<Record<SurfaceMaterial, CanvasPattern>> = {};
 
   constructor(private canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d')!;
     this.resize();
     window.addEventListener('resize', () => this.resize());
     this.loadRealisticMonkeyToiletSprite();
+    this.loadRealisticSlopTextures();
+  }
+
+  private loadRealisticSlopTextures() {
+    const materials: SurfaceMaterial[] = ['rock', 'wood', 'metal', 'ice'];
+    for (const m of materials) {
+      const img = new Image();
+      img.src = `textures/${m}.jpg`;
+      img.onload = () => {
+        const pat = this.ctx.createPattern(img, 'repeat');
+        if (pat) {
+          const matrix = new DOMMatrix();
+          // Scale texture so details look crisp and proportionate (~3.5m per texture tile)
+          matrix.scaleSelf(0.0028, 0.0028);
+          if (pat.setTransform) {
+            pat.setTransform(matrix);
+          }
+          this.slopPatterns[m] = pat;
+        }
+      };
+    }
   }
 
   private loadRealisticMonkeyToiletSprite() {
@@ -153,7 +175,8 @@ export class GameRenderer {
       ctx.translate(b.x, b.y);
       if (b.angle) ctx.rotate(b.angle);
 
-      ctx.fillStyle = b.color;
+      const pat = this.slopPatterns[b.material];
+      ctx.fillStyle = pat || b.color;
       ctx.strokeStyle = b.strokeColor;
       ctx.lineWidth = 0.065;
       ctx.lineJoin = 'round';

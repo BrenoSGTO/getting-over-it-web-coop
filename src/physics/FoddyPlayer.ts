@@ -1,6 +1,6 @@
 import * as planck from 'planck-js';
 import { SoundSystem } from '../audio/SoundSystem';
-import { SurfaceMaterial } from './LevelBuilder';
+import { SurfaceMaterial, LevelBuilder } from './LevelBuilder';
 
 export interface Particle {
   x: number;
@@ -99,7 +99,8 @@ export class FoddyPlayer {
     private world: planck.World,
     spawnX: number,
     spawnY: number,
-    private sounds: SoundSystem
+    private sounds: SoundSystem,
+    private level: LevelBuilder
   ) {
     // 1. SKIBIDI TOILET / POT BODY
     this.potBody = this.world.createBody({
@@ -344,6 +345,36 @@ export class FoddyPlayer {
         }
       }
     });
+
+    // CRITICAL: When the hammer tip penetrates or is inside any terrain block,
+    // immediately disable the contact in pre-solve so the interior/reverse edges
+    // of the terrain polygon NEVER trap the hammer or block it from pulling out!
+    this.world.on('pre-solve', (contact) => {
+      const fA = contact.getFixtureA();
+      const fB = contact.getFixtureB();
+      const uA = (fA.getUserData() || {}) as Record<string, unknown>;
+      const uB = (fB.getUserData() || {}) as Record<string, unknown>;
+
+      const isTip = uA.isHammerTip || uB.isHammerTip;
+      if (!isTip) return;
+
+      const terrainData = (uA.isTerrain ? uA : uB.isTerrain ? uB : null) as {
+        id?: string;
+      } | null;
+      if (!terrainData || !terrainData.id) return;
+
+      const tipPos = this.tipBody.getPosition();
+      // If the tip is inside this terrain block (or any block), disable contact so it can freely exit
+      const block = this.level.getBlockById(terrainData.id);
+      if (block && this.level.isPointInsideBlock(tipPos.x, tipPos.y, block)) {
+        contact.setEnabled(false);
+      } else {
+        const containingBlock = this.level.getContainingBlock(tipPos.x, tipPos.y);
+        if (containingBlock) {
+          contact.setEnabled(false);
+        }
+      }
+    });
   }
 
   /**
@@ -448,6 +479,32 @@ export class FoddyPlayer {
     const potVel = this.potBody.getLinearVelocity();
     const targetTilt = Math.max(-0.18, Math.min(0.18, -potVel.x * 0.025));
     this.visualPotTilt += (targetTilt - this.visualPotTilt) * 0.2;
+
+    // =========================================================================
+    // 0. ANTI-STUCK SYSTEM: EJECT HAMMER IF INSIDE TERRAIN GEOMETRY
+    // =========================================================================
+    const insideBlock = this.level.getContainingBlock(tipPos.x, tipPos.y);
+    if (insideBlock) {
+      this.tipSlide = true;
+      this.tipIsTouchingTerrain = false;
+      this.tipContactAnchor = null;
+
+      // Eject hammer back toward the player's shoulder along the arm shaft
+      const toShoulder = planck.Vec2.sub(shoulderPos, tipPos);
+      const dist = toShoulder.length();
+      if (dist > 0.02) {
+        const ejectDir = planck.Vec2.mul(toShoulder, 1 / dist);
+        this.tipBody.setLinearVelocity(planck.Vec2.mul(ejectDir, 16.0));
+      }
+
+      // Also gently pull fakeCursorPos / cursorOffset out so the mouse doesn't pull deeper in
+      const currentOffsetLen = this.cursorOffset.length();
+      if (currentOffsetLen > this.MIN_ARM_REACH) {
+        this.cursorOffset.mul(0.85);
+        this.fakeCursorPos = planck.Vec2.add(shoulderPos, this.cursorOffset);
+        this.mw = this.fakeCursorPos.clone();
+      }
+    }
 
     // =========================================================================
     // 1. DYNAMIC FRICTION SWITCHING (HammerCollisions.OnCollisionStay2D)
@@ -639,11 +696,15 @@ export class FoddyPlayer {
     const rawSliderSpeed =
       (reachError * 30.0 + Math.sign(reachError) * reachError * reachError * 18.0) *
       torqueLoadFactor;
+    const isPushingIntoTerrain = this.tipIsTouchingTerrain && reachError > 0;
+    const maxExtensionSpeed = isPushingIntoTerrain ? 8.0 : 35.0;
+    const maxRetractionSpeed = 40.0;
     const maxNonOvershootSlider = Math.abs(reachError) * 44.0;
+
     const sliderSpeed = Math.max(
-      -40.0,
+      -maxRetractionSpeed,
       Math.min(
-        40.0,
+        maxExtensionSpeed,
         Math.sign(rawSliderSpeed) * Math.min(Math.abs(rawSliderSpeed), maxNonOvershootSlider)
       )
     );

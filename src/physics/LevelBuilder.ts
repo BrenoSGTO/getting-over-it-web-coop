@@ -17,6 +17,11 @@ export interface TerrainBlock {
   height?: number;
   radius?: number;
   vertices?: { x: number; y: number }[];
+  worldVerts?: { x: number; y: number }[];
+  minX?: number;
+  maxX?: number;
+  minY?: number;
+  maxY?: number;
   friction: number;
 }
 
@@ -37,6 +42,7 @@ export interface HangingVine {
 
 export class LevelBuilder {
   public blocks: TerrainBlock[] = [];
+  public blocksById: Map<string, TerrainBlock> = new Map();
   public signposts: Signpost[] = [];
   public decorativeVines: HangingVine[] = [];
   // Exact Getting Over It spawn point shifted so (-44.2926, -2.4218) -> (0, 1.2)
@@ -100,8 +106,9 @@ export class LevelBuilder {
 
     // Store vertices relative to (cx, cy) so GameRenderer can translate(b.x, b.y) and cull cleanly
     const localVerts = worldVerts.map((v) => ({ x: v.x - cx, y: v.y - cy }));
+    const worldVertsData = worldVerts.map((v) => ({ x: v.x, y: v.y }));
 
-    this.blocks.push({
+    const block: TerrainBlock = {
       id,
       label,
       material,
@@ -112,9 +119,16 @@ export class LevelBuilder {
       y: cy,
       width,
       height,
+      minX,
+      maxX,
+      minY,
+      maxY,
       vertices: localVerts,
+      worldVerts: worldVertsData,
       friction: style.friction,
-    });
+    };
+    this.blocks.push(block);
+    this.blocksById.set(id, block);
   }
 
   private addCircle(
@@ -139,7 +153,7 @@ export class LevelBuilder {
     });
     fixture.setUserData({ isTerrain: true, material, id });
 
-    this.blocks.push({
+    const block: TerrainBlock = {
       id,
       label,
       material,
@@ -151,8 +165,71 @@ export class LevelBuilder {
       width: radius * 2,
       height: radius * 2,
       radius,
+      minX: x - radius,
+      maxX: x + radius,
+      minY: y - radius,
+      maxY: y + radius,
       friction: style.friction,
-    });
+    };
+    this.blocks.push(block);
+    this.blocksById.set(id, block);
+  }
+
+  public getBlockById(id: string): TerrainBlock | undefined {
+    return this.blocksById.get(id);
+  }
+
+  /**
+   * Fast spatial containment check using AABB broadphase + Ray-casting Jordan Curve Theorem.
+   * Returns true if (px, py) is strictly inside this terrain block.
+   */
+  public isPointInsideBlock(px: number, py: number, block: TerrainBlock): boolean {
+    if (
+      block.minX === undefined ||
+      px < block.minX ||
+      px > block.maxX! ||
+      py < block.minY! ||
+      py > block.maxY!
+    ) {
+      return false;
+    }
+
+    if (block.shapeType === 'circle' && block.radius) {
+      const dx = px - block.x;
+      const dy = py - block.y;
+      return dx * dx + dy * dy < block.radius * block.radius;
+    }
+
+    if (block.shapeType === 'polygon' && block.worldVerts && block.worldVerts.length >= 3) {
+      let inside = false;
+      const verts = block.worldVerts;
+      const n = verts.length;
+      for (let i = 0, j = n - 1; i < n; j = i++) {
+        const xi = verts[i].x;
+        const yi = verts[i].y;
+        const xj = verts[j].x;
+        const yj = verts[j].y;
+        const intersect =
+          yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi;
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    }
+
+    return false;
+  }
+
+  /**
+   * Returns the first TerrainBlock that contains the point (px, py), or null if in open air.
+   */
+  public getContainingBlock(px: number, py: number): TerrainBlock | null {
+    for (let i = 0; i < this.blocks.length; i++) {
+      const b = this.blocks[i];
+      if (this.isPointInsideBlock(px, py, b)) {
+        return b;
+      }
+    }
+    return null;
   }
 
   private addVineDecoration(x1: number, y1: number, x2: number, y2: number, sag = 0.9) {

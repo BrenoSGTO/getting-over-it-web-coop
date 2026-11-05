@@ -14,7 +14,7 @@ const world = new planck.World({
 
 const sounds = new SoundSystem();
 const level = new LevelBuilder(world);
-const player = new FoddyPlayer(world, level.spawnPoint.x, level.spawnPoint.y, sounds);
+const player = new FoddyPlayer(world, level.spawnPoint.x, level.spawnPoint.y, sounds, level);
 
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
 const renderer = new GameRenderer(canvas);
