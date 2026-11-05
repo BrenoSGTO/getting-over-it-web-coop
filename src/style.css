@@ -420,6 +420,48 @@ input[type="color"] {
   border-radius: 50%;
 }
 
+.chat-section {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.chat-messages {
+  height: 118px;
+  overflow-y: auto;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.chat-msg {
+  word-break: break-word;
+  color: #e2e8f0;
+}
+
+.chat-msg.system-msg {
+  color: #94a3b8;
+  font-style: italic;
+  font-size: 0.71rem;
+}
+
+.chat-author {
+  font-weight: 700;
+  margin-right: 4px;
+}
+
+.chat-input-row {
+  display: flex;
+  gap: 6px;
+}
+
 /* Pointer Lock Overlay */
 .overlay-banner {
   position: fixed;

@@ -56,7 +56,31 @@ const tpToSelect = document.getElementById('tp-to-select') as HTMLSelectElement;
 const btnHostTp = document.getElementById('btn-host-tp') as HTMLButtonElement;
 const playerCountEl = document.getElementById('player-count')!;
 const playersListEl = document.getElementById('players-list')!;
+const chatMessagesEl = document.getElementById('chat-messages')!;
+const chatInput = document.getElementById('chat-input') as HTMLInputElement;
+const btnSendChat = document.getElementById('btn-send-chat') as HTMLButtonElement;
 const toastContainer = document.getElementById('toast-container')!;
+
+let localChatBubbleText = '';
+let localChatBubbleUntil = 0;
+
+function appendChatMessage(author: string, color: string, text: string, isSelf: boolean) {
+  const row = document.createElement('div');
+  row.className = 'chat-msg';
+
+  const authorSpan = document.createElement('span');
+  authorSpan.className = 'chat-author';
+  authorSpan.style.color = color || '#fbbf24';
+  authorSpan.textContent = isSelf ? `${author} (Você):` : `${author}:`;
+
+  const textSpan = document.createElement('span');
+  textSpan.textContent = text;
+
+  row.appendChild(authorSpan);
+  row.appendChild(textSpan);
+  chatMessagesEl.appendChild(row);
+  chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+}
 
 function showToast(msg: string) {
   const el = document.createElement('div');
@@ -91,6 +115,13 @@ const network = new CoopNetwork(world, {
     renderer.camPos.x = destX;
     renderer.camPos.y = destY + 1;
     showToast(`⚡ Você foi teleportado até ${destName}!`);
+  },
+  onChatMessage: (senderName, senderColor, text, isSelf) => {
+    appendChatMessage(senderName, senderColor, text, isSelf);
+    if (isSelf) {
+      localChatBubbleText = text;
+      localChatBubbleUntil = performance.now() + 6000;
+    }
   },
 });
 
@@ -187,6 +218,24 @@ btnHostTp.addEventListener('click', () => {
   }
 });
 
+function submitChat() {
+  const txt = chatInput.value.trim();
+  if (!txt) return;
+  network.sendChatMessage(txt);
+  chatInput.value = '';
+}
+
+btnSendChat.addEventListener('click', () => {
+  submitChat();
+});
+
+chatInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    submitChat();
+  }
+});
+
 // Auto-join if ?room=GOI-XXXX is in the URL
 const urlParams = new URLSearchParams(window.location.search);
 const roomFromUrl = urlParams.get('room');
@@ -237,9 +286,25 @@ const SAVE_KEY = 'goi_original_map_saved_pos_v4';
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     player.setInputActive(false);
+    if (document.activeElement === chatInput) {
+      chatInput.blur();
+    }
     return;
   }
-  if (document.activeElement === playerNameInput || document.activeElement === roomCodeInput) {
+  if (
+    document.activeElement === playerNameInput ||
+    document.activeElement === roomCodeInput ||
+    document.activeElement === chatInput
+  ) {
+    return;
+  }
+  if (e.key === 'Enter' || e.key.toLowerCase() === 't') {
+    e.preventDefault();
+    if (document.pointerLockElement === canvas && document.exitPointerLock) {
+      document.exitPointerLock();
+    }
+    player.setInputActive(false);
+    chatInput.focus();
     return;
   }
   if (e.key.toLowerCase() === 'r') {
@@ -315,13 +380,15 @@ function gameLoop(now: number) {
   }
 
   // Render scene
+  const activeLocalBubble = now < localChatBubbleUntil ? localChatBubbleText : '';
   renderer.render(
     level,
     player,
     network.myName,
     network.myColor,
     network.remotePlayers,
-    chkTether.checked
+    chkTether.checked,
+    activeLocalBubble
   );
 
   // Update HUD every 4 frames

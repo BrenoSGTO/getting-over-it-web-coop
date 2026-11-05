@@ -6,6 +6,8 @@ export interface RemotePlayerState {
   name: string;
   color: string;
   isHost?: boolean;
+  chatBubbleText?: string;
+  chatBubbleUntil?: number;
   // Smoothly interpolated positions rendered at 60fps
   potX: number;
   potY: number;
@@ -36,11 +38,13 @@ export interface RemotePlayerState {
  * - State tuple:    ['s', peerId, potX*100, potY*100, potVX*20, potVY*20, tipX*100, tipY*100]
  * - Meta tuple:     ['m', peerId, name, color, isHostFlag]
  * - Teleport tuple: ['t', senderPeerId, targetPeerId, destX*100, destY*100, destPlayerName]
+ * - Chat tuple:     ['c', senderPeerId, senderName, senderColor, messageText]
  */
 export type CompactPacket =
   | ['s', string, number, number, number, number, number, number]
   | ['m', string, string, string, number?]
-  | ['t', string, string, number, number, string];
+  | ['t', string, string, number, number, string]
+  | ['c', string, string, string, string];
 
 /**
  * Lightweight MQTT v3.1.1 over WSS Relay Client
@@ -282,6 +286,7 @@ export class CoopNetwork {
   private onStatusChange?: (status: string, online: boolean, roomCode: string) => void;
   private onToast?: (msg: string) => void;
   private onTeleportCommand?: (destX: number, destY: number, destName: string) => void;
+  private onChatMessage?: (senderName: string, senderColor: string, text: string, isSelf: boolean) => void;
 
   constructor(
     private world: planck.World,
@@ -289,11 +294,13 @@ export class CoopNetwork {
       onStatusChange?: (status: string, online: boolean, roomCode: string) => void;
       onToast?: (msg: string) => void;
       onTeleportCommand?: (destX: number, destY: number, destName: string) => void;
+      onChatMessage?: (senderName: string, senderColor: string, text: string, isSelf: boolean) => void;
     }
   ) {
     this.onStatusChange = callbacks?.onStatusChange;
     this.onToast = callbacks?.onToast;
     this.onTeleportCommand = callbacks?.onTeleportCommand;
+    this.onChatMessage = callbacks?.onChatMessage;
   }
 
   private generateShortCode(): string {
@@ -454,6 +461,25 @@ export class CoopNetwork {
     this.sendRawPacket(pkt);
   }
 
+  /**
+   * Sends a text chat message to all party members in the room
+   */
+  public sendChatMessage(rawText: string) {
+    const cleanText = rawText.trim().slice(0, 140);
+    if (!cleanText) return;
+    if (this.isConnected) {
+      const pkt: CompactPacket = [
+        'c',
+        this.myPeerId,
+        this.myName.slice(0, 14),
+        this.myColor,
+        cleanText,
+      ];
+      this.sendRawPacket(pkt);
+    }
+    this.onChatMessage?.(this.myName, this.myColor, cleanText, true);
+  }
+
   private sendRawPacket(pkt: CompactPacket) {
     // Prefer direct P2P DataChannel if open; otherwise send via WSS Relay (never duplicate!)
     let sentViaP2P = false;
@@ -505,6 +531,26 @@ export class CoopNetwork {
           targetRemote.netPotVY = 0;
         }
       }
+      return;
+    }
+
+    if (type === 'c') {
+      const [, , senderName, senderColor, msgText] = pkt;
+      if (!msgText) return;
+      const remote = this.remotePlayers.get(peerId);
+      if (remote) {
+        remote.name = senderName || remote.name;
+        remote.color = senderColor || remote.color;
+        remote.chatBubbleText = msgText;
+        remote.chatBubbleUntil = now + 6000;
+        remote.lastSeen = now;
+      }
+      this.onChatMessage?.(
+        senderName || remote?.name || 'Macaco',
+        senderColor || remote?.color || '#38bdf8',
+        msgText,
+        false
+      );
       return;
     }
 

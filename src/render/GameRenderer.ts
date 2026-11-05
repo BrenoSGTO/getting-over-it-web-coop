@@ -97,7 +97,8 @@ export class GameRenderer {
     playerName: string,
     playerColor: string,
     remotePlayers: Map<string, RemotePlayerState>,
-    tetherEnabled: boolean
+    tetherEnabled: boolean,
+    localChatBubble = ''
   ) {
     const ctx = this.ctx;
     const w = window.innerWidth;
@@ -245,7 +246,10 @@ export class GameRenderer {
     }
 
     // 6. Draw Remote Co-op Players (always use exact interpolated r.potX/r.potY & r.tipX/r.tipY)
+    const now = performance.now();
     for (const r of remotePlayers.values()) {
+      const rBubble =
+        r.chatBubbleText && r.chatBubbleUntil && now < r.chatBubbleUntil ? r.chatBubbleText : '';
       this.drawClimberCharacter(
         ctx,
         r.potX,
@@ -256,7 +260,8 @@ export class GameRenderer {
         r.color,
         r.name,
         true,
-        false
+        false,
+        rBubble
       );
     }
 
@@ -273,7 +278,8 @@ export class GameRenderer {
       playerColor,
       playerName,
       false,
-      !localPlayer.tipSlide
+      !localPlayer.tipSlide,
+      localChatBubble
     );
 
     // 8. Draw Sparks / Leaf Particles
@@ -320,7 +326,8 @@ export class GameRenderer {
     accentColor: string,
     name: string,
     isRemote: boolean,
-    isStaticLocked: boolean
+    isStaticLocked: boolean,
+    chatBubbleText = ''
   ) {
     const shoulderX = potX;
     const shoulderY = potY + 0.35;
@@ -424,7 +431,7 @@ export class GameRenderer {
     this.drawBananaHead(ctx, 1.0, isStaticLocked);
     ctx.restore();
 
-    // --- E. Player Name Tag above Monkey ---
+    // --- E. Player Name Tag & Chat Speech Bubble above Monkey ---
     ctx.save();
     ctx.translate(potX, potY + 1.18);
     ctx.scale(1 / this.pixelsPerMeter, -1 / this.pixelsPerMeter);
@@ -437,6 +444,21 @@ export class GameRenderer {
     ctx.fill();
     ctx.fillStyle = accentColor;
     ctx.fillText(name, 0, 4);
+
+    if (chatBubbleText) {
+      ctx.font = '600 12px Inter, sans-serif';
+      const bubbleW = Math.min(Math.max(ctx.measureText(chatBubbleText).width + 20, 48), 260);
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
+      ctx.strokeStyle = accentColor;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(-bubbleW / 2, -38, bubbleW, 24, 8);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillText(chatBubbleText, 0, -22, bubbleW - 14);
+    }
     ctx.restore();
 
     ctx.restore();
