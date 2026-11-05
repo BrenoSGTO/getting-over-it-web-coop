@@ -3,6 +3,131 @@ import { FoddyPlayer } from '../physics/FoddyPlayer';
 import { LevelBuilder, SurfaceMaterial } from '../physics/LevelBuilder';
 import { RemotePlayerState } from '../net/CoopNetwork';
 
+interface TwinkleStar {
+  xRatio: number;
+  yRatio: number;
+  size: number;
+  baseAlpha: number;
+  phase: number;
+  speed: number;
+  color: string;
+}
+
+interface VoxelCloudBlock {
+  rx: number;
+  ry: number;
+  rw: number;
+  rh: number;
+}
+
+interface VoxelCloud {
+  x: number;
+  worldY: number;
+  speed: number;
+  blocks: VoxelCloudBlock[];
+  scale: number;
+}
+
+interface SkyKeyframe {
+  ratio: number;
+  top: [number, number, number];
+  mid: [number, number, number];
+  bottom: [number, number, number];
+}
+
+const SKY_KEYFRAMES: SkyKeyframe[] = [
+  // Ground (0m - 50m): Beautiful bright vibrant blue Minecraft sky (#3a88fe to #78b2fe) with warm sunlight
+  {
+    ratio: 0.0,
+    top: [58, 136, 254],     // #3a88fe
+    mid: [120, 178, 254],    // #78b2fe
+    bottom: [225, 240, 255], // Sunlit horizon
+  },
+  {
+    ratio: 0.14, // ~50m
+    top: [58, 136, 254],     // #3a88fe
+    mid: [142, 185, 252],
+    bottom: [255, 222, 160], // Warm sunlight
+  },
+  // Mid-mountain (50m - 180m): Sunset / golden twilight with warm amber and purple tones
+  {
+    ratio: 0.28, // ~100m
+    top: [78, 48, 132],      // Warm twilight purple
+    mid: [238, 118, 68],     // Amber sunset
+    bottom: [251, 191, 36],  // Golden sunset glow
+  },
+  {
+    ratio: 0.42, // ~150m
+    top: [52, 28, 88],       // Deep purple
+    mid: [195, 68, 85],      // Sunset rose
+    bottom: [249, 115, 22],  // Fiery amber horizon
+  },
+  {
+    ratio: 0.50, // 180m
+    top: [32, 22, 68],       // Twilight dusk
+    mid: [115, 45, 95],      // Twilight magenta
+    bottom: [180, 83, 9],    // Deep amber sliver
+  },
+  // Upper-mountain (180m - 300m): Deep twilight indigo (#0d1430 to #1e1b4b) with glowing stars
+  {
+    ratio: 0.65, // ~235m
+    top: [13, 20, 48],       // #0d1430
+    mid: [22, 24, 62],
+    bottom: [30, 27, 75],    // #1e1b4b
+  },
+  {
+    ratio: 0.83, // 300m
+    top: [8, 12, 28],
+    mid: [13, 20, 48],       // #0d1430
+    bottom: [30, 27, 75],    // #1e1b4b
+  },
+  // Space summit (300m - 362m+): Deep black cosmic space with twinkling square stars and nebulae
+  {
+    ratio: 1.0,  // 362m+
+    top: [1, 2, 6],          // Deep black cosmic space
+    mid: [4, 5, 12],
+    bottom: [8, 9, 18],
+  },
+];
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function lerpColor(
+  c1: [number, number, number],
+  c2: [number, number, number],
+  t: number
+): [number, number, number] {
+  return [
+    Math.round(lerp(c1[0], c2[0], t)),
+    Math.round(lerp(c1[1], c2[1], t)),
+    Math.round(lerp(c1[2], c2[2], t)),
+  ];
+}
+
+function getSkyColors(ratio: number): {
+  top: [number, number, number];
+  mid: [number, number, number];
+  bottom: [number, number, number];
+} {
+  const clamped = Math.max(0, Math.min(ratio, 1));
+  for (let i = 0; i < SKY_KEYFRAMES.length - 1; i++) {
+    const k0 = SKY_KEYFRAMES[i];
+    const k1 = SKY_KEYFRAMES[i + 1];
+    if (clamped >= k0.ratio && clamped <= k1.ratio) {
+      const t = (clamped - k0.ratio) / (k1.ratio - k0.ratio);
+      return {
+        top: lerpColor(k0.top, k1.top, t),
+        mid: lerpColor(k0.mid, k1.mid, t),
+        bottom: lerpColor(k0.bottom, k1.bottom, t),
+      };
+    }
+  }
+  const last = SKY_KEYFRAMES[SKY_KEYFRAMES.length - 1];
+  return { top: last.top, mid: last.mid, bottom: last.bottom };
+}
+
 export class GameRenderer {
   private ctx: CanvasRenderingContext2D;
   // Decompiled CameraControl.cs fields
@@ -11,6 +136,8 @@ export class GameRenderer {
   public pixelsPerMeter = 46; // Ortho zoom scale
   private monkeyToiletSprite: HTMLCanvasElement | null = null;
   private slopPatterns: Partial<Record<SurfaceMaterial, CanvasPattern>> = {};
+  private stars: TwinkleStar[] = [];
+  private voxelClouds: VoxelCloud[] = [];
 
   constructor(private canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d')!;
@@ -18,19 +145,22 @@ export class GameRenderer {
     window.addEventListener('resize', () => this.resize());
     this.loadRealisticMonkeyToiletSprite();
     this.loadRealisticSlopTextures();
+    this.initStars();
+    this.initVoxelClouds();
   }
 
   private loadRealisticSlopTextures() {
     const materials: SurfaceMaterial[] = ['rock', 'wood', 'metal', 'ice'];
     for (const m of materials) {
       const img = new Image();
-      img.src = `textures/${m}.jpg`;
+      img.src = `textures/${m}.png`;
       img.onload = () => {
         const pat = this.ctx.createPattern(img, 'repeat');
         if (pat) {
           const matrix = new DOMMatrix();
-          // Scale texture so details look crisp and proportionate (~3.5m per texture tile)
-          matrix.scaleSelf(0.0028, 0.0028);
+          // Scale texture so 1 Minecraft block (32x32 pixel art) ~ 1.0m in world coordinates
+          const scale = 1.0 / img.width;
+          matrix.scaleSelf(scale, scale);
           if (pat.setTransform) {
             pat.setTransform(matrix);
           }
@@ -80,6 +210,7 @@ export class GameRenderer {
     this.canvas.width = window.innerWidth * dpr;
     this.canvas.height = window.innerHeight * dpr;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.ctx.imageSmoothingEnabled = false;
   }
 
   /**
@@ -127,24 +258,8 @@ export class GameRenderer {
     const h = window.innerHeight;
     const ppm = this.pixelsPerMeter;
 
-    // 1. Lush Tropical Jungle Sky & Canopy Gradient
-    const altRatio = Math.min(Math.max(this.camPos.y / level.summitY, 0), 1);
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
-    if (altRatio < 0.7) {
-      grad.addColorStop(0, '#052e16');
-      grad.addColorStop(0.55, '#064e3b');
-      grad.addColorStop(1, '#14532d');
-    } else {
-      // Golden sunlit treetop canopy near the summit
-      grad.addColorStop(0, '#065f46');
-      grad.addColorStop(0.5, '#115e59');
-      grad.addColorStop(1, '#14532d');
-    }
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
-
-    // Parallax Jungle Trees, Vines & Fireflies
-    this.drawJungleParallax(ctx, w, h, altRatio);
+    // 1. Minecraft Dynamic Sky Gradient & Parallax Background
+    this.renderMinecraftSkyAndBackground(ctx, w, h, level);
 
     ctx.save();
     // Transform to World Coordinates (Y up, centered on camPos)
@@ -177,9 +292,6 @@ export class GameRenderer {
 
       const pat = this.slopPatterns[b.material];
       ctx.fillStyle = pat || b.color;
-      ctx.strokeStyle = b.strokeColor;
-      ctx.lineWidth = 0.065;
-      ctx.lineJoin = 'round';
 
       if (b.shapeType === 'polygon' && b.vertices && b.vertices.length >= 3) {
         ctx.beginPath();
@@ -189,54 +301,14 @@ export class GameRenderer {
         }
         ctx.closePath();
         ctx.fill();
-        ctx.stroke();
-
-        // Highlight top-facing moss/bark edges on reverse-engineered Getting Over It terrain
-        ctx.strokeStyle =
-          b.material === 'ice'
-            ? '#5eead4'
-            : b.material === 'wood'
-              ? '#ca8a04'
-              : '#4ade80';
-        ctx.lineWidth = 0.055;
-        ctx.beginPath();
-        let hasTopEdge = false;
-        for (let i = 0; i < b.vertices.length; i++) {
-          const v1 = b.vertices[i];
-          const v2 = b.vertices[(i + 1) % b.vertices.length];
-          const dx = v2.x - v1.x;
-          const dy = v2.y - v1.y;
-          // In local coordinates, top edges have substantial horizontal span near the upper half
-          if (Math.abs(dx) > Math.abs(dy) * 0.7 && (v1.y + v2.y) * 0.5 >= 0) {
-            ctx.moveTo(v1.x, v1.y);
-            ctx.lineTo(v2.x, v2.y);
-            hasTopEdge = true;
-          }
-        }
-        if (hasTopEdge) ctx.stroke();
       } else if (b.shapeType === 'box' && b.width && b.height) {
         ctx.beginPath();
-        ctx.roundRect(-b.width / 2, -b.height / 2, b.width, b.height, 0.14);
-        ctx.fill();
-        ctx.stroke();
-
-        // Lush green moss/foliage strip along the top of branches & stones
-        ctx.fillStyle = b.material === 'ice' ? '#5eead4' : '#22c55e';
-        ctx.beginPath();
-        ctx.roundRect(-b.width / 2 + 0.08, b.height / 2 - 0.14, b.width - 0.16, 0.12, 0.06);
+        ctx.rect(-b.width / 2, -b.height / 2, b.width, b.height);
         ctx.fill();
       } else if (b.shapeType === 'circle' && b.radius) {
         ctx.beginPath();
         ctx.arc(0, 0, b.radius, 0, Math.PI * 2);
         ctx.fill();
-        ctx.stroke();
-
-        // Braided vine spiral pattern on vine knots
-        ctx.strokeStyle = 'rgba(187, 247, 208, 0.45)';
-        ctx.lineWidth = 0.045;
-        ctx.beginPath();
-        ctx.arc(0, 0, b.radius * 0.58, 0.3, Math.PI * 1.6);
-        ctx.stroke();
 
         // If this is the summit trophy, draw a Giant Golden Banana on top!
         if (b.id === 'summit-trophy') {
@@ -591,33 +663,447 @@ export class GameRenderer {
     }
   }
 
-  private drawJungleParallax(
+  private initStars() {
+    const colors = ['#ffffff', '#ffffff', '#e0f2fe', '#fef08a', '#ede9fe'];
+    for (let i = 0; i < 90; i++) {
+      const seed1 = Math.sin(i * 12.9898 + 78.233) * 43758.5453;
+      const seed2 = Math.sin((i + 99) * 43.123 + 12.876) * 23421.631;
+      const xRatio = seed1 - Math.floor(seed1);
+      const yRatio = seed2 - Math.floor(seed2);
+      const size = i % 6 === 0 ? 3 : i % 2 === 0 ? 2 : 1.5;
+      this.stars.push({
+        xRatio,
+        yRatio,
+        size,
+        baseAlpha: 0.45 + 0.55 * ((i % 10) / 10),
+        phase: (i * 0.73) % (Math.PI * 2),
+        speed: 1.2 + (i % 5) * 0.7,
+        color: colors[i % colors.length],
+      });
+    }
+  }
+
+  private initVoxelClouds() {
+    const templates: VoxelCloudBlock[][] = [
+      // Cloud A: Classic wide Minecraft voxel slab
+      [
+        { rx: 0, ry: 8, rw: 170, rh: 26 },
+        { rx: 24, ry: 0, rw: 116, rh: 14 },
+        { rx: -28, ry: 12, rw: 36, rh: 18 },
+        { rx: 154, ry: 10, rw: 42, rh: 20 },
+      ],
+      // Cloud B: Medium elongated stepped cloud
+      [
+        { rx: 0, ry: 6, rw: 135, rh: 22 },
+        { rx: 32, ry: 0, rw: 75, rh: 12 },
+        { rx: 125, ry: 8, rw: 34, rh: 16 },
+        { rx: -20, ry: 10, rw: 28, rh: 14 },
+      ],
+      // Cloud C: Chunky tiered cloud
+      [
+        { rx: 0, ry: 10, rw: 190, rh: 28 },
+        { rx: 38, ry: 0, rw: 84, rh: 16 },
+        { rx: 105, ry: 4, rw: 64, rh: 14 },
+        { rx: -36, ry: 14, rw: 48, rh: 20 },
+      ],
+      // Cloud D: Compact voxel formation
+      [
+        { rx: 0, ry: 6, rw: 100, rh: 20 },
+        { rx: 22, ry: 0, rw: 58, rh: 10 },
+        { rx: 85, ry: 8, rw: 30, rh: 14 },
+      ],
+    ];
+
+    const cloudAlts = [28, 52, 78, 105, 135, 168, 202, 238];
+    for (let i = 0; i < cloudAlts.length; i++) {
+      this.voxelClouds.push({
+        x: (i * 260) % 1300,
+        worldY: cloudAlts[i],
+        speed: 0.75 + (i % 3) * 0.4,
+        blocks: templates[i % templates.length],
+        scale: 0.85 + (i % 3) * 0.2,
+      });
+    }
+  }
+
+  private renderMinecraftSkyAndBackground(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    level: LevelBuilder
+  ) {
+    const altRatio = Math.max(0, this.camPos.y / level.summitY);
+    const now = performance.now();
+
+    // 1. Dynamic sky gradient transitioning smoothly based on altitude altRatio
+    const { top, mid, bottom } = getSkyColors(altRatio);
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, `rgb(${top[0]}, ${top[1]}, ${top[2]})`);
+    grad.addColorStop(0.55, `rgb(${mid[0]}, ${mid[1]}, ${mid[2]})`);
+    grad.addColorStop(1, `rgb(${bottom[0]}, ${bottom[1]}, ${bottom[2]})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+
+    // 2. Twinkling square stars (Upper-mountain & Cosmic space)
+    this.drawMinecraftStars(ctx, w, h, altRatio, now);
+
+    // 3. Cosmic nebulae & summit Overworld planet (Space summit)
+    this.drawSpaceNebulaeAndSummitPlanet(ctx, w, h, altRatio);
+
+    // 4. Iconic Minecraft Square Sun (Ground & Mid-mountain sunset)
+    this.drawMinecraftSun(ctx, w, h, altRatio);
+
+    // 5. Iconic Minecraft Square Moon (Sunset, Twilight, Cosmic space)
+    this.drawMinecraftMoon(ctx, w, h, altRatio);
+
+    // 6. Distant Minecraft stepped hills in parallax (Ground & Lower mid-mountain)
+    this.drawMinecraftDistantHills(ctx, w, h, altRatio);
+
+    // 7. Drifting cubic / voxel clouds in parallax
+    this.drawVoxelClouds(ctx, w, h, altRatio, now);
+
+    // 8. Ground sunlight ambient sparkles
+    this.drawGroundAmbientSunlight(ctx, w, h, altRatio, now);
+  }
+
+  private drawMinecraftSun(
     ctx: CanvasRenderingContext2D,
     w: number,
     h: number,
     altRatio: number
   ) {
+    // Sun is visible from ground (0m) to late sunset (180m / altRatio ~0.50)
+    if (altRatio >= 0.58) return;
+    const sunAlpha = Math.max(0, Math.min(1, (0.58 - altRatio) / 0.15));
+    if (sunAlpha <= 0) return;
+
+    ctx.save();
+    ctx.globalAlpha = sunAlpha;
+
+    // Parallax position: sets smoothly towards horizon as player climbs into mid-mountain sunset
+    const sunX = ((w * 0.72 - this.camPos.x * 0.7) % (w + 240) + (w + 240)) % (w + 240) - 120;
+    const sunY = h * 0.18 + altRatio * (h * 0.44);
+
+    const isSunset = altRatio >= 0.16;
+    const tSunset = Math.min(1, Math.max(0, (altRatio - 0.16) / 0.3));
+
+    // Outer soft glare square
+    ctx.fillStyle = isSunset
+      ? `rgba(249, 115, 22, ${0.2 + tSunset * 0.12})`
+      : 'rgba(254, 240, 138, 0.22)';
+    ctx.fillRect(sunX - 65, sunY - 65, 130, 130);
+
+    // Middle corona square
+    ctx.fillStyle = isSunset
+      ? `rgba(234, 88, 12, ${0.45 + tSunset * 0.2})`
+      : 'rgba(253, 224, 71, 0.45)';
+    ctx.fillRect(sunX - 42, sunY - 42, 84, 84);
+
+    // Iconic Minecraft stepped ray accents
+    ctx.fillRect(sunX - 52, sunY - 14, 10, 28);
+    ctx.fillRect(sunX + 42, sunY - 14, 10, 28);
+    ctx.fillRect(sunX - 14, sunY - 52, 28, 10);
+    ctx.fillRect(sunX - 14, sunY + 42, 28, 10);
+
+    // Bright core square
+    ctx.fillStyle = isSunset ? '#fed7aa' : '#fffef0';
+    ctx.fillRect(sunX - 25, sunY - 25, 50, 50);
+
+    // Minecraft square rim
+    ctx.strokeStyle = isSunset ? '#ea580c' : '#fde047';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(sunX - 25, sunY - 25, 50, 50);
+
+    ctx.restore();
+  }
+
+  private drawMinecraftMoon(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    altRatio: number
+  ) {
+    // Moon rises during sunset (altRatio >= 0.28) and shines bright into space
+    if (altRatio < 0.28) return;
+    const moonAlpha = Math.max(0, Math.min(1, (altRatio - 0.28) / 0.18));
+    if (moonAlpha <= 0) return;
+
+    ctx.save();
+    ctx.globalAlpha = moonAlpha;
+
+    // Parallax position: rises higher in the sky as player climbs into space
+    const moonX = ((w * 0.24 - this.camPos.x * 0.5) % (w + 240) + (w + 240)) % (w + 240) - 120;
+    const moonY = Math.max(h * 0.12, h * 0.32 - (altRatio - 0.28) * (h * 0.24));
+
+    // Outer faint silver halo square
+    ctx.fillStyle = 'rgba(186, 230, 253, 0.14)';
+    ctx.fillRect(moonX - 55, moonY - 55, 110, 110);
+
+    // Inner halo square
+    ctx.fillStyle = 'rgba(224, 242, 254, 0.28)';
+    ctx.fillRect(moonX - 36, moonY - 36, 72, 72);
+
+    // Core square moon
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillRect(moonX - 24, moonY - 24, 48, 48);
+
+    // Minecraft square moon crater pixels
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillRect(moonX - 16, moonY - 16, 12, 12);
+    ctx.fillRect(moonX + 4, moonY - 12, 12, 10);
+
+    ctx.fillStyle = '#64748b';
+    ctx.fillRect(moonX - 10, moonY + 4, 14, 10);
+
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillRect(moonX + 6, moonY + 6, 8, 8);
+
+    // Crisp rim
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(moonX - 24, moonY - 24, 48, 48);
+
+    ctx.restore();
+  }
+
+  private drawMinecraftStars(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    altRatio: number,
+    now: number
+  ) {
+    if (altRatio < 0.32) return;
+    const starAlpha = Math.max(0, Math.min(1, (altRatio - 0.32) / 0.2));
+    if (starAlpha <= 0) return;
+
+    ctx.save();
+    for (let i = 0; i < this.stars.length; i++) {
+      const s = this.stars[i];
+      const twinkle = 0.55 + 0.45 * Math.sin(now * 0.003 * s.speed + s.phase);
+      const sx = ((s.xRatio * w - this.camPos.x * 1.2) % w + w) % w;
+      const sy = ((s.yRatio * h - (this.camPos.y - 110) * 0.8) % h + h) % h;
+      ctx.fillStyle = s.color;
+      ctx.globalAlpha = starAlpha * s.baseAlpha * twinkle;
+      const sz = Math.floor(s.size);
+      ctx.fillRect(Math.floor(sx), Math.floor(sy), sz, sz);
+    }
+    ctx.restore();
+  }
+
+  private drawSpaceNebulaeAndSummitPlanet(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    altRatio: number
+  ) {
+    if (altRatio < 0.72) return;
+    const cosmicAlpha = Math.max(0, Math.min(1, (altRatio - 0.72) / 0.16));
+    if (cosmicAlpha <= 0) return;
+
     ctx.save();
 
-    // Distant giant jungle tree trunks in background parallax
-    ctx.fillStyle = 'rgba(2, 44, 34, 0.45)';
-    for (let i = 0; i < 7; i++) {
-      const tx = ((i * 290 - this.camPos.x * 8) % (w + 200) + (w + 200)) % (w + 200) - 100;
-      const trunkW = 55 + (i % 3) * 25;
-      ctx.fillRect(tx, 0, trunkW, h);
+    // Cosmic Nebula 1 (Deep galactic purple & indigo)
+    const n1x = w * 0.32;
+    const n1y = h * 0.28;
+    const g1 = ctx.createRadialGradient(n1x, n1y, 10, n1x, n1y, 280);
+    g1.addColorStop(0, `rgba(168, 85, 247, ${0.18 * cosmicAlpha})`);
+    g1.addColorStop(0.5, `rgba(59, 130, 246, ${0.09 * cosmicAlpha})`);
+    g1.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = g1;
+    ctx.fillRect(n1x - 280, n1y - 280, 560, 560);
+
+    // Cosmic Nebula 2 (Cosmic rose & cyan)
+    const n2x = w * 0.78;
+    const n2y = h * 0.38;
+    const g2 = ctx.createRadialGradient(n2x, n2y, 10, n2x, n2y, 320);
+    g2.addColorStop(0, `rgba(236, 72, 153, ${0.14 * cosmicAlpha})`);
+    g2.addColorStop(0.5, `rgba(99, 102, 241, ${0.07 * cosmicAlpha})`);
+    g2.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = g2;
+    ctx.fillRect(n2x - 320, n2y - 320, 640, 640);
+
+    // Iconic Minecraft Overworld Planet visible from the summit!
+    if (altRatio >= 0.82) {
+      const planetAlpha = Math.max(0, Math.min(1, (altRatio - 0.82) / 0.14));
+      const px = w * 0.82 - ((this.camPos.x * 0.3) % 80);
+      const py = h * 0.68;
+
+      ctx.globalAlpha = cosmicAlpha * planetAlpha;
+
+      // Atmosphere aura
+      ctx.fillStyle = 'rgba(96, 165, 250, 0.24)';
+      ctx.fillRect(px - 28, py - 28, 56, 56);
+
+      // Ocean globe base
+      ctx.fillStyle = '#1d4ed8';
+      ctx.fillRect(px - 22, py - 22, 44, 44);
+
+      // Stepped Minecraft green continents
+      ctx.fillStyle = '#22c55e';
+      ctx.fillRect(px - 16, py - 16, 16, 12);
+      ctx.fillRect(px - 10, py - 4, 18, 14);
+      ctx.fillRect(px + 4, py + 2, 12, 12);
+
+      // Darker forest green accents
+      ctx.fillStyle = '#15803d';
+      ctx.fillRect(px - 12, py - 12, 8, 6);
+      ctx.fillRect(px - 6, py + 2, 8, 6);
+
+      // Voxel cloud swirls
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.88)';
+      ctx.fillRect(px - 20, py - 8, 18, 4);
+      ctx.fillRect(px - 4, py + 8, 22, 4);
+      ctx.fillRect(px + 6, py - 14, 12, 4);
     }
 
-    // Glowing jungle fireflies / pollen particles
-    const glowAlpha = 0.25 + altRatio * 0.45;
-    ctx.fillStyle = `rgba(250, 204, 21, ${glowAlpha})`;
-    for (let i = 0; i < 40; i++) {
-      const sx = ((i * 197 + this.camPos.x * -5) % w + w) % w;
-      const sy = ((i * 131 + this.camPos.y * 7) % h + h) % h;
-      const r = (i % 3) * 1.1 + 1.2;
-      ctx.beginPath();
-      ctx.arc(sx, sy, r, 0, Math.PI * 2);
-      ctx.fill();
+    ctx.restore();
+  }
+
+  private drawVoxelClouds(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    altRatio: number,
+    now: number
+  ) {
+    // Clouds vanish in space
+    if (altRatio >= 0.82) return;
+    const globalCloudAlpha = Math.max(0, Math.min(1, (0.82 - altRatio) / 0.15));
+    if (globalCloudAlpha <= 0) return;
+
+    ctx.save();
+
+    // Determine cloud color scheme based on altitude
+    let topColor: string;
+    let bottomColor: string;
+
+    if (altRatio < 0.18) {
+      // Ground Day: Crisp white and cool silver shading
+      topColor = `rgba(255, 255, 255, ${0.94 * globalCloudAlpha})`;
+      bottomColor = `rgba(203, 213, 225, ${0.88 * globalCloudAlpha})`;
+    } else if (altRatio < 0.5) {
+      // Mid-mountain Sunset: Warm golden-peach highlight & twilight purple underside
+      const t = (altRatio - 0.18) / 0.32;
+      const topR = Math.round(lerp(255, 254, t));
+      const topG = Math.round(lerp(255, 215, t));
+      const topB = Math.round(lerp(255, 170, t));
+      const botR = Math.round(lerp(203, 192, t));
+      const botG = Math.round(lerp(213, 132, t));
+      const botB = Math.round(lerp(225, 252, t));
+      topColor = `rgba(${topR}, ${topG}, ${topB}, ${0.92 * globalCloudAlpha})`;
+      bottomColor = `rgba(${botR}, ${botG}, ${botB}, ${0.85 * globalCloudAlpha})`;
+    } else {
+      // Upper-mountain Twilight: Indigo highlights & deep dusk underside
+      const t = (altRatio - 0.5) / 0.32;
+      const topR = Math.round(lerp(254, 99, t));
+      const topG = Math.round(lerp(215, 102, t));
+      const topB = Math.round(lerp(170, 241, t));
+      const botR = Math.round(lerp(192, 30, t));
+      const botG = Math.round(lerp(132, 27, t));
+      const botB = Math.round(lerp(252, 75, t));
+      topColor = `rgba(${topR}, ${topG}, ${topB}, ${0.75 * globalCloudAlpha})`;
+      bottomColor = `rgba(${botR}, ${botG}, ${botB}, ${0.82 * globalCloudAlpha})`;
+    }
+
+    for (let i = 0; i < this.voxelClouds.length; i++) {
+      const c = this.voxelClouds[i];
+      const drift = now * 0.015 * c.speed;
+      const cx =
+        ((c.x + drift - this.camPos.x * (0.75 + c.speed * 0.35)) % (w + 480) + (w + 480)) %
+          (w + 480) -
+        240;
+
+      // Vertical altitude placement: clouds sit at natural heights; climber climbs right through them!
+      const relY = c.worldY - this.camPos.y;
+      const cy = h * 0.45 - relY * 4.8;
+
+      // Screen culling
+      if (cy < -120 || cy > h + 120) continue;
+
+      for (let j = 0; j < c.blocks.length; j++) {
+        const b = c.blocks[j];
+        const bx = cx + b.rx * c.scale;
+        const by = cy + b.ry * c.scale;
+        const bw = b.rw * c.scale;
+        const bh = b.rh * c.scale;
+        const topH = Math.floor(bh * 0.65);
+        const botH = Math.ceil(bh * 0.35);
+
+        // Top lit surface
+        ctx.fillStyle = topColor;
+        ctx.fillRect(bx, by, bw, topH);
+
+        // Bottom shaded underside
+        ctx.fillStyle = bottomColor;
+        ctx.fillRect(bx, by + topH, bw, botH);
+      }
+    }
+
+    ctx.restore();
+  }
+
+  private drawMinecraftDistantHills(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    altRatio: number
+  ) {
+    if (altRatio >= 0.35) return;
+    const hillAlpha = Math.max(0, Math.min(1, (0.35 - altRatio) / 0.15));
+    if (hillAlpha <= 0) return;
+
+    ctx.save();
+    ctx.globalAlpha = hillAlpha;
+
+    // Far Mountain Ridge (Stepped silhouette)
+    const farFill = altRatio < 0.15 ? '#4b7bb5' : '#4a2260';
+    ctx.fillStyle = farFill;
+    const stepW1 = 48;
+    const baseX1 = -((this.camPos.x * 0.3) % (stepW1 * 10));
+    const baseY1 = h * 0.72 + altRatio * h * 0.4;
+    for (let x = -stepW1 * 2; x < w + stepW1 * 2; x += stepW1) {
+      const colIdx = Math.floor((x - baseX1) / stepW1);
+      const stepH = 20 + Math.abs(Math.sin(colIdx * 1.3)) * 60 + ((colIdx % 3) * 16);
+      ctx.fillRect(x, baseY1 - stepH, stepW1, h - (baseY1 - stepH));
+    }
+
+    // Near Mountain Ridge (Stepped Minecraft Oak / Green hills)
+    const nearFill = altRatio < 0.15 ? '#235928' : '#31233d';
+    ctx.fillStyle = nearFill;
+    const stepW2 = 36;
+    const baseX2 = -((this.camPos.x * 0.7) % (stepW2 * 10));
+    const baseY2 = h * 0.84 + altRatio * h * 0.4;
+    for (let x = -stepW2 * 2; x < w + stepW2 * 2; x += stepW2) {
+      const colIdx = Math.floor((x - baseX2) / stepW2);
+      const stepH = 15 + Math.abs(Math.cos(colIdx * 0.9)) * 45 + ((colIdx % 4) * 12);
+      ctx.fillRect(x, baseY2 - stepH, stepW2, h - (baseY2 - stepH));
+    }
+
+    ctx.restore();
+  }
+
+  private drawGroundAmbientSunlight(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    altRatio: number,
+    now: number
+  ) {
+    if (altRatio >= 0.16) return;
+    const sporeAlpha = Math.max(0, (0.16 - altRatio) / 0.16);
+    if (sporeAlpha <= 0) return;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(254, 240, 138, 0.45)';
+    ctx.globalAlpha = sporeAlpha;
+    for (let i = 0; i < 20; i++) {
+      const sx = ((i * 179 + now * 0.02 - this.camPos.x * 3) % w + w) % w;
+      const sy =
+        ((i * 127 + Math.sin(now * 0.002 + i) * 20 - this.camPos.y * 3) % h + h) % h;
+      ctx.fillRect(Math.floor(sx), Math.floor(sy), 2, 2);
     }
     ctx.restore();
   }
 }
+
