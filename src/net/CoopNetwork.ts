@@ -69,21 +69,35 @@ export class CoopNetwork {
     return code;
   }
 
-  public hostRoom(): Promise<string> {
+  private getIceServers(): RTCIceServer[] {
+    return [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      {
+        urls: [
+          'turn:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:443',
+          'turn:openrelay.metered.ca:443?transport=tcp',
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayproject',
+      },
+    ];
+  }
+
+  public hostRoom(customCode?: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const code = this.generateShortCode();
+      const raw = customCode ? customCode.trim().toUpperCase() : this.generateShortCode();
+      const code = raw.startsWith('GOI-') ? raw : `GOI-${raw}`;
       const peerId = `getting-over-it-coop-${code}`;
 
       this.cleanup();
-      this.onStatusChange?.('Criando sala Co-op...', false, '');
+      this.onStatusChange?.(`Criando sala ${code}...`, false, '');
 
       this.peer = new Peer(peerId, {
         config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun.cloudflare.com:3478' },
-          ],
+          iceServers: this.getIceServers(),
         },
       });
 
@@ -92,7 +106,7 @@ export class CoopNetwork {
         this.roomCode = code;
         this.isConnected = true;
         this.onStatusChange?.(`Sala Ativa (${code})`, true, code);
-        this.onToast?.(`Sala ${code} criada! Copie o link para convidar amigos.`);
+        this.onToast?.(`Sala ${code} ativa! Envie o link para seus amigos.`);
         resolve(code);
       });
 
@@ -101,14 +115,21 @@ export class CoopNetwork {
       });
 
       this.peer.on('error', (err) => {
-        console.error('PeerJS Host Error:', err);
+        console.warn('PeerJS Host Notice:', err.type);
+        // If ID is already taken on the signaling server, someone is already hosting this code -> join it!
+        if (err.type === 'unavailable-id') {
+          this.joinRoom(code, false)
+            .then(() => resolve(code))
+            .catch(reject);
+          return;
+        }
         this.onToast?.(`Erro de rede: ${err.type}`);
         reject(err);
       });
     });
   }
 
-  public joinRoom(rawCode: string): Promise<void> {
+  public joinRoom(rawCode: string, allowAutoHostFallback = true): Promise<void> {
     return new Promise((resolve, reject) => {
       const cleanCode = rawCode.trim().toUpperCase();
       const formattedCode = cleanCode.startsWith('GOI-') ? cleanCode : `GOI-${cleanCode}`;
@@ -119,18 +140,14 @@ export class CoopNetwork {
 
       this.peer = new Peer({
         config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun.cloudflare.com:3478' },
-          ],
+          iceServers: this.getIceServers(),
         },
       });
 
       this.peer.on('open', (id) => {
         this.myPeerId = id;
         this.roomCode = formattedCode;
-        const conn = this.peer!.connect(hostPeerId, { reliable: false });
+        const conn = this.peer!.connect(hostPeerId, { reliable: true });
         this.setupConnection(conn, () => {
           this.isConnected = true;
           this.onStatusChange?.(`Conectado (${formattedCode})`, true, formattedCode);
@@ -144,6 +161,15 @@ export class CoopNetwork {
       });
 
       this.peer.on('error', (err) => {
+        // If no host is currently registered with this room code (e.g., host refreshed with ?room=...),
+        // automatically claim & host this room code so the room stays alive!
+        if (err.type === 'peer-unavailable' && allowAutoHostFallback) {
+          console.info(`Sala ${formattedCode} sem host ativo; assumindo como Host automaticamente...`);
+          this.hostRoom(formattedCode)
+            .then(() => resolve())
+            .catch(reject);
+          return;
+        }
         console.error('PeerJS Join Error:', err);
         this.onStatusChange?.('Falha ao conectar', false, '');
         this.onToast?.(`Não foi possível encontrar a sala ${formattedCode}`);

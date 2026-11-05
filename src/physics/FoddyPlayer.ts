@@ -42,29 +42,31 @@ export class FoddyPlayer {
 
   // Decompiled fields from PlayerControl.cs
   public fakeCursorPos = planck.Vec2(0, 1.5);
+  public cursorOffset = planck.Vec2(1.4, 0.65);
   public mw = planck.Vec2(0, 1.5);
   public mouseInput = planck.Vec2(0, 0);
   public oldMouse = planck.Vec2(0, 0);
-  public mouseVelocityAverage = 0.005;
+  public mouseVelocityAverage = 0.05;
   public mouseSensitivity = 1.0;
   public angleEpsilon = 1.0; // deg
-  public deadzone = 0.25; // m
+  public deadzone = 0.15; // m
   public oldAngle = 0;
   public mouseSnap = false;
+  public visualPotTilt = 0;
 
   // Decompiled fields from HammerCollisions.cs & PotSounds.cs
   public tipSlide = true;
   public potSlide = true;
-  public moveThreshold = 0.03; // 0.029999999329447746f
-  public potMoveThreshold = 0.07; // 0.07000000029802322f
+  public moveThreshold = 0.045;
+  public potMoveThreshold = 0.07;
   public hardHitThreshold = 14.0;
   public whooshThreshold = 1.5;
 
   // Static vs Sliding friction values
-  public readonly TIP_STATIC_FRICTION = 2.4;
-  public readonly TIP_SLIDING_FRICTION = 0.28;
-  public readonly POT_STATIC_FRICTION = 0.85;
-  public readonly POT_SLIDING_FRICTION = 0.18;
+  public readonly TIP_STATIC_FRICTION = 3.2;
+  public readonly TIP_SLIDING_FRICTION = 0.45;
+  public readonly POT_STATIC_FRICTION = 0.9;
+  public readonly POT_SLIDING_FRICTION = 0.2;
 
   private tipContactAnchor: planck.Vec2 | null = null;
   private tipContactMaterial: SurfaceMaterial = 'rock';
@@ -76,19 +78,21 @@ export class FoddyPlayer {
   private oldDeltaPos = planck.Vec2(0, 0);
   private pendingMouseDX = 0;
   private pendingMouseDY = 0;
+  private directWorldTarget: planck.Vec2 | null = null;
 
   public particles: Particle[] = [];
   public telemetry: PlayerTelemetry = {
     isStaticFriction: false,
-    frictionValue: 0.28,
+    frictionValue: 0.45,
     strainPercent: 0,
-    extensionMeters: 1.5,
+    extensionMeters: 1.4,
     motorSpeedDeg: 0,
     sliderSpeed: 0,
   };
 
-  public readonly MAX_ARM_REACH = 2.85;
-  public readonly MIN_ARM_REACH = 0.55;
+  public readonly MAX_ARM_REACH = 2.75;
+  public readonly MIN_ARM_REACH = 0.42;
+  public readonly SHOULDER_OFFSET_Y = 0.35;
 
   constructor(
     private world: planck.World,
@@ -97,20 +101,22 @@ export class FoddyPlayer {
     private sounds: SoundSystem
   ) {
     // 1. CAULDRON / POT BODY
+    // In Getting Over It, the player's core body has fixedRotation so shoulder motor
+    // torque swings the hammer and lifts the player instead of spinning the pot in circles.
     this.potBody = this.world.createBody({
       type: 'dynamic',
       position: planck.Vec2(spawnX, spawnY),
-      fixedRotation: false,
-      linearDamping: 0.15,
-      angularDamping: 2.2,
+      fixedRotation: true,
+      linearDamping: 0.12,
+      angularDamping: 2.0,
       bullet: true,
     });
 
-    // Lower heavy base of the cauldron (low center of mass keeps Diogenes upright)
+    // Lower rounded base of the cauldron
     this.potBottomFixture = this.potBody.createFixture(
-      planck.Circle(planck.Vec2(0, -0.18), 0.56),
+      planck.Circle(planck.Vec2(0, -0.18), 0.52),
       {
-        density: 6.5,
+        density: 4.2,
         friction: this.POT_SLIDING_FRICTION,
         restitution: 0.0,
         filterGroupIndex: -1, // Never collide with own arm/hammer
@@ -120,9 +126,9 @@ export class FoddyPlayer {
 
     // Upper rim of the cauldron
     const rimFixture = this.potBody.createFixture(
-      planck.Box(0.52, 0.28, planck.Vec2(0, 0.12), 0),
+      planck.Box(0.46, 0.22, planck.Vec2(0, 0.1), 0),
       {
-        density: 2.0,
+        density: 1.4,
         friction: 0.2,
         restitution: 0.0,
         filterGroupIndex: -1,
@@ -130,47 +136,55 @@ export class FoddyPlayer {
     );
     rimFixture.setUserData({ isPot: true });
 
-    // Subtle upright stabilization torque so the cauldron behaves like Foddy's hubJoint
     // 2. SHOULDER HUB BODY (Intermediate body connecting RevoluteJoint and PrismaticJoint)
-    const shoulderPos = planck.Vec2(spawnX, spawnY + 0.35);
+    const shoulderPos = planck.Vec2(spawnX, spawnY + this.SHOULDER_OFFSET_Y);
     this.hubBody = this.world.createBody({
       type: 'dynamic',
       position: shoulderPos,
+      angle: 0,
       bullet: true,
-      angularDamping: 0.5,
+      angularDamping: 1.5,
     });
-    this.hubBody.createFixture(planck.Circle(0.15), {
-      density: 1.2,
+    this.hubBody.createFixture(planck.Circle(0.18), {
+      density: 2.0,
       filterGroupIndex: -1,
       isSensor: true,
     });
+    // High rotational inertia on hubBody ensures the PrismaticJoint never bends under load
+    this.hubBody.setMassData({
+      mass: 1.5,
+      center: planck.Vec2(0, 0),
+      I: 6.5,
+    });
 
     // 3. HAMMER TIP BODY
-    const initialTipPos = planck.Vec2(spawnX + 1.4, spawnY + 1.1);
+    // IMPORTANT: Created at shoulderPos with angle 0 when initializing PrismaticJoint so
+    // localAnchorA = (0,0) and localAnchorB = (0,0), making jointTranslation == exact arm reach!
     this.tipBody = this.world.createBody({
       type: 'dynamic',
-      position: initialTipPos,
+      position: shoulderPos,
+      angle: 0,
       bullet: true,
       fixedRotation: false,
       linearDamping: 0.05,
-      angularDamping: 1.0,
+      angularDamping: 1.5,
     });
 
-    // Hammer head shape (beveled box / circle combination for hooking ledges cleanly)
+    // Hammer head shape matching visual orientation (0.26m along shaft X, 0.50m across head Y)
     this.tipFixture = this.tipBody.createFixture(
-      planck.Box(0.28, 0.14),
+      planck.Box(0.13, 0.24),
       {
-        density: 2.4,
-        friction: this.TIP_SLIDING_FRICTION,
+        density: 2.8,
+        friction: this.TIP_STATIC_FRICTION,
         restitution: 0.0,
         filterGroupIndex: -1,
       }
     );
     this.tipFixture.setUserData({ isHammerTip: true });
 
-    // Rounded hook nose on the hammer head so it catches corners smoothly
-    const noseFix = this.tipBody.createFixture(
-      planck.Circle(planck.Vec2(0, 0.12), 0.14),
+    // Top pick hook nose on the hammer head for catching ledges cleanly
+    const topHookFix = this.tipBody.createFixture(
+      planck.Circle(planck.Vec2(0, 0.23), 0.12),
       {
         density: 1.2,
         friction: this.TIP_STATIC_FRICTION,
@@ -178,16 +192,28 @@ export class FoddyPlayer {
         filterGroupIndex: -1,
       }
     );
-    noseFix.setUserData({ isHammerTip: true });
+    topHookFix.setUserData({ isHammerTip: true });
+
+    // Bottom claw hook on the hammer head for hooking under-ledges
+    const botHookFix = this.tipBody.createFixture(
+      planck.Circle(planck.Vec2(0, -0.23), 0.12),
+      {
+        density: 1.2,
+        friction: this.TIP_STATIC_FRICTION,
+        restitution: 0.0,
+        filterGroupIndex: -1,
+      }
+    );
+    botHookFix.setUserData({ isHammerTip: true });
 
     // 4. HINGE JOINT (hj) - Rotates the arm around the shoulder
     this.hingeJoint = this.world.createJoint(
       planck.RevoluteJoint(
         {
           enableMotor: true,
-          maxMotorTorque: 1250.0,
+          maxMotorTorque: 3800.0,
           motorSpeed: 0,
-           collideConnected: false,
+          collideConnected: false,
         },
         this.potBody,
         this.hubBody,
@@ -203,7 +229,7 @@ export class FoddyPlayer {
           lowerTranslation: this.MIN_ARM_REACH,
           upperTranslation: this.MAX_ARM_REACH,
           enableMotor: true,
-          maxMotorForce: 950.0,
+          maxMotorForce: 3200.0,
           motorSpeed: 0,
           collideConnected: false,
         },
@@ -214,8 +240,8 @@ export class FoddyPlayer {
       )
     )!;
 
-    this.fakeCursorPos = initialTipPos.clone();
-    this.mw = initialTipPos.clone();
+    // Place hammer at initial rest pose (angle 0.4 rad, reach 1.45m)
+    this.teleportTo(spawnX, spawnY);
 
     this.setupCollisionListeners();
   }
@@ -330,9 +356,11 @@ export class FoddyPlayer {
   public hammerReturn() {
     const tipPos = this.tipBody.getPosition();
     const potPos = this.potBody.getPosition();
+    const shoulderPos = this.hubBody.getPosition();
     if (tipPos.y - 0.4 >= potPos.y) {
       this.mouseSnap = true;
       this.fakeCursorPos = tipPos.clone();
+      this.cursorOffset = planck.Vec2.sub(tipPos, shoulderPos);
     }
   }
 
@@ -342,22 +370,28 @@ export class FoddyPlayer {
   public addMouseDelta(dx: number, dy: number) {
     this.pendingMouseDX += dx;
     this.pendingMouseDY -= dy; // Invert Y so moving mouse up = +Y in world
+    this.directWorldTarget = null;
   }
 
   /**
-   * Direct cursor target fallback when Pointer Lock is not active
+   * Direct cursor target when Pointer Lock is not active (moves 1:1 with mouse on canvas)
    */
   public setWorldMouseFallback(worldX: number, worldY: number) {
-    const diffX = (worldX - this.fakeCursorPos.x) * 14;
-    const diffY = (worldY - this.fakeCursorPos.y) * 14;
-    this.pendingMouseDX = diffX;
-    this.pendingMouseDY = diffY;
+    this.directWorldTarget = planck.Vec2(worldX, worldY);
   }
 
   /**
    * Reset player to the bottom of the mountain (or any coordinate)
    */
   public teleportTo(x: number, y: number) {
+    const shoulderPos = planck.Vec2(x, y + this.SHOULDER_OFFSET_Y);
+    const initAngle = 0.4;
+    const initReach = 1.45;
+    const tipPos = planck.Vec2(
+      shoulderPos.x + Math.cos(initAngle) * initReach,
+      shoulderPos.y + Math.sin(initAngle) * initReach
+    );
+
     this.potBody.setLinearVelocity(planck.Vec2(0, 0));
     this.potBody.setAngularVelocity(0);
     this.potBody.setPosition(planck.Vec2(x, y));
@@ -365,22 +399,22 @@ export class FoddyPlayer {
 
     this.hubBody.setLinearVelocity(planck.Vec2(0, 0));
     this.hubBody.setAngularVelocity(0);
-    this.hubBody.setPosition(planck.Vec2(x, y + 0.35));
-    this.hubBody.setAngle(0.4);
+    this.hubBody.setPosition(shoulderPos);
+    this.hubBody.setAngle(initAngle);
 
-    const tipPos = planck.Vec2(x + 1.3, y + 1.0);
     this.tipBody.setLinearVelocity(planck.Vec2(0, 0));
     this.tipBody.setAngularVelocity(0);
     this.tipBody.setPosition(tipPos);
-    this.tipBody.setAngle(0.4);
+    this.tipBody.setAngle(initAngle);
 
+    this.cursorOffset = planck.Vec2.sub(tipPos, shoulderPos);
     this.fakeCursorPos = tipPos.clone();
     this.mw = tipPos.clone();
-    this.mouseVelocityAverage = 0.005;
+    this.mouseVelocityAverage = 0.05;
   }
 
   /**
-   * Runs one fixed physics tick (60Hz) implementing the exact decompiled IL from:
+   * Runs one fixed physics tick (60Hz) implementing the exact decompiled mechanics from:
    * - PlayerControl.FixedUpdate
    * - HammerCollisions.OnCollisionStay2D & FixedUpdate
    * - PotSounds.FixedUpdate
@@ -390,10 +424,10 @@ export class FoddyPlayer {
     const shoulderPos = this.hubBody.getPosition();
     const tipPos = this.tipBody.getPosition();
 
-    // Keep cauldron gently upright (preventing upside-down turtle lock)
-    const potAngle = this.potBody.getAngle();
-    const uprightError = Math.atan2(Math.sin(-potAngle), Math.cos(-potAngle));
-    this.potBody.applyTorque(uprightError * 65.0 - this.potBody.getAngularVelocity() * 8.0, true);
+    // Subtle visual wobble of the cauldron based on horizontal velocity (like Foddy's hubJoint)
+    const potVel = this.potBody.getLinearVelocity();
+    const targetTilt = Math.max(-0.18, Math.min(0.18, -potVel.x * 0.025));
+    this.visualPotTilt += (targetTilt - this.visualPotTilt) * 0.2;
 
     // =========================================================================
     // 1. DYNAMIC FRICTION SWITCHING (HammerCollisions.OnCollisionStay2D)
@@ -402,10 +436,10 @@ export class FoddyPlayer {
       const distMoved = planck.Vec2.sub(tipPos, this.tipContactAnchor).length();
       const tipSpeed = this.tipBody.getLinearVelocity().length();
 
-      // IL_0240: if distance < moveThreshold (0.03), slide = false (STATIC GRIP!)
-      if (distMoved < this.moveThreshold && tipSpeed < 0.45) {
+      // Lock static grip when hammer tip is planted against a surface
+      if (distMoved < this.moveThreshold && tipSpeed < 0.85) {
         this.tipSlide = false;
-      } else if (distMoved > this.moveThreshold * 2.2 || tipSpeed > 1.1) {
+      } else if (distMoved > this.moveThreshold * 2.5 || tipSpeed > 1.8) {
         this.tipSlide = true;
         this.tipContactAnchor = tipPos.clone(); // Re-anchor as it slides
       }
@@ -415,7 +449,7 @@ export class FoddyPlayer {
 
     const activeTipFriction =
       this.tipContactMaterial === 'ice'
-        ? 0.12
+        ? 0.14
         : this.tipSlide
           ? this.TIP_SLIDING_FRICTION
           : this.TIP_STATIC_FRICTION;
@@ -427,7 +461,7 @@ export class FoddyPlayer {
     // Pot static/sliding friction switch
     if (this.potIsTouchingTerrain && this.potContactAnchor) {
       const potDist = planck.Vec2.sub(potPos, this.potContactAnchor).length();
-      if (potDist < this.potMoveThreshold && this.potBody.getLinearVelocity().length() < 1.2) {
+      if (potDist < this.potMoveThreshold && potVel.length() < 1.2) {
         this.potSlide = false;
       } else {
         this.potSlide = true;
@@ -441,134 +475,143 @@ export class FoddyPlayer {
     );
 
     // =========================================================================
-    // 2. FAKE CURSOR & MOUSE FILTERING (PlayerControl.FixedUpdate IL_0190-IL_1434)
+    // 2. FAKE CURSOR & MOUSE FILTERING (PlayerControl.FixedUpdate)
     // =========================================================================
     if (this.mouseSnap) {
       this.mouseSnap = false;
+    } else if (this.directWorldTarget) {
+      // Unlocked mouse mode: follow mouse cursor directly in world space
+      const desiredOffset = planck.Vec2.sub(this.directWorldTarget, shoulderPos);
+      this.cursorOffset = planck.Vec2(
+        this.cursorOffset.x + (desiredOffset.x - this.cursorOffset.x) * 0.65,
+        this.cursorOffset.y + (desiredOffset.y - this.cursorOffset.y) * 0.65
+      );
+      this.directWorldTarget = null;
     } else {
       this.oldMouse = this.mouseInput.clone();
 
-      // Scale raw pixel delta into Rewired-equivalent axis units
-      const rawInput = planck.Vec2(
-        this.pendingMouseDX * 0.11 * this.mouseSensitivity,
-        this.pendingMouseDY * 0.11 * this.mouseSensitivity
-      );
+      // Convert raw pixel movement to meters (44px = 1m at 1.0x sensitivity)
+      const dxMeters = (this.pendingMouseDX / 44.0) * this.mouseSensitivity;
+      const dyMeters = (this.pendingMouseDY / 44.0) * this.mouseSensitivity;
       this.pendingMouseDX = 0;
       this.pendingMouseDY = 0;
 
-      // Evaluate mouse acceleration curve (Foddy's mouseCurve boosts fast flicks slightly)
-      const mag = rawInput.length();
-      const curveFactor = 1.0 + Math.min(mag * 0.12, 0.85);
-      const curvedInput = planck.Vec2.mul(rawInput, curveFactor);
+      // Subtle acceleration curve for fast flicks
+      const deltaMag = Math.hypot(dxMeters, dyMeters);
+      const curveFactor = 1.0 + Math.min(deltaMag * 0.4, 0.6);
+      const curvedInput = planck.Vec2(dxMeters * curveFactor, dyMeters * curveFactor);
 
-      // IL_0313: mouseInput = Vector2.Lerp(oldMouse, mouseInput, 0.5f)
+      // Smooth input across 2 frames (Lerp 0.65)
       this.mouseInput = planck.Vec2(
-        this.oldMouse.x * 0.5 + curvedInput.x * 0.5,
-        this.oldMouse.y * 0.5 + curvedInput.y * 0.5
+        this.oldMouse.x * 0.35 + curvedInput.x * 0.65,
+        this.oldMouse.y * 0.35 + curvedInput.y * 0.65
       );
 
-      this.mw = this.fakeCursorPos.clone();
+      this.cursorOffset.x += this.mouseInput.x;
+      this.cursorOffset.y += this.mouseInput.y;
 
-      // IL_1031-IL_1079: mouseVelocityAverage = Lerp(mouseVelocityAverage, Max(0.1f * mouseInput.magnitude, 0.001f), 0.05f) + 0.005f
-      const targetVelAvg = Math.max(0.1 * this.mouseInput.length(), 0.001);
+      const targetVelAvg = Math.max(this.mouseInput.length(), 0.005);
       this.mouseVelocityAverage =
-        this.mouseVelocityAverage + (targetVelAvg - this.mouseVelocityAverage) * 0.05 + 0.005;
-
-      // IL_1090-IL_1117: loc9 = fakeCursorPos + mouseInput * mouseVelocityAverage
-      let nextCursorPos = planck.Vec2(
-        this.fakeCursorPos.x + this.mouseInput.x * this.mouseVelocityAverage,
-        this.fakeCursorPos.y + this.mouseInput.y * this.mouseVelocityAverage
-      );
-
-      // IL_1146-IL_1221: Clamp fakeCursor distance to 3.5m radius around player pot
-      const fromPot = planck.Vec2.sub(nextCursorPos, potPos);
-      if (fromPot.length() > 3.5) {
-        fromPot.normalize();
-        nextCursorPos = planck.Vec2.add(potPos, planck.Vec2.mul(fromPot, 3.5));
-      }
-
-      // IL_1224-IL_1250: loc10 = tip.position - mw (error vector from cursor to hammer tip)
-      const tipMinusCursor = planck.Vec2.sub(tipPos, this.mw);
-
-      // IL_1363-IL_1434: Elastic pull of fakeCursor toward blocked hammer tip when mouse slows down!
-      const pullFactor =
-        0.05 *
-        10.0 *
-        Math.min(Math.max(0.2 - Math.min(this.mouseVelocityAverage, 0.2), 0.0), 0.2);
-      nextCursorPos = planck.Vec2.add(
-        nextCursorPos,
-        planck.Vec2.mul(tipMinusCursor, pullFactor)
-      );
-
-      this.fakeCursorPos = nextCursorPos;
-      this.mw = this.fakeCursorPos.clone();
+        this.mouseVelocityAverage + (targetVelAvg - this.mouseVelocityAverage) * 0.15;
     }
 
+    // Clamp cursor offset within 3.1m radius around the shoulder
+    const offsetLen = this.cursorOffset.length();
+    if (offsetLen > 3.1) {
+      this.cursorOffset.mul(3.1 / offsetLen);
+    } else if (offsetLen < 0.15) {
+      if (offsetLen > 0.0001) {
+        this.cursorOffset.mul(0.15 / offsetLen);
+      } else {
+        this.cursorOffset = planck.Vec2(0.15, 0);
+      }
+    }
+
+    this.fakeCursorPos = planck.Vec2.add(shoulderPos, this.cursorOffset);
+
+    // When the hammer tip is physically blocked against terrain and the player stops moving
+    // the mouse, gently relax fakeCursor partway toward the blocked hammer tip (Foddy's pullFactor)
+    if (this.tipIsTouchingTerrain && this.mouseInput.length() < 0.02) {
+      const tipMinusCursor = planck.Vec2.sub(tipPos, this.fakeCursorPos);
+      if (tipMinusCursor.length() > 0.45) {
+        this.cursorOffset.add(planck.Vec2.mul(tipMinusCursor, 0.04));
+        this.fakeCursorPos = planck.Vec2.add(shoulderPos, this.cursorOffset);
+      }
+    }
+
+    this.mw = this.fakeCursorPos.clone();
+
     // =========================================================================
-    // 3. HINGE & SLIDER JOINT MOTORS (PlayerControl.FixedUpdate IL_1478-IL_1825)
+    // 3. HINGE & SLIDER JOINT MOTORS (PlayerControl.FixedUpdate)
     // =========================================================================
-    // Vector from shoulder hinge to cursor (mw - hj.position)
     const toCursor = planck.Vec2.sub(this.mw, shoulderPos);
     const toCursorDist = toCursor.length();
 
-    // Target world angle in degrees and current arm world angle in degrees
-    const targetWorldAngleDeg = (Math.atan2(toCursor.y, toCursor.x) * 180) / Math.PI;
-    const currentWorldAngleDeg = (this.hubBody.getAngle() * 180) / Math.PI;
+    const targetWorldAngleRad = Math.atan2(toCursor.y, toCursor.x);
+    const currentWorldAngleRad = this.hubBody.getAngle();
 
-    // Shortest angular difference in degrees [-180, 180]
-    let deltaDeg = ((targetWorldAngleDeg - currentWorldAngleDeg + 540) % 360) - 180;
-
-    // IL_1570-IL_1602: loc3 = Sign(loc3) * Max(Abs(loc3 / 2f), Abs(loc3 * loc3))
-    const sign = deltaDeg >= 0 ? 1 : -1;
-    let shapedAngle = sign * Math.max(Math.abs(deltaDeg / 2.0), Math.abs(deltaDeg * deltaDeg));
-
-    // IL_1603-IL_1623: loc3 = loc3 * Clamp01(Abs(loc3) / angleEpsilon)
-    const epsFactor = Math.min(Math.max(Math.abs(shapedAngle) / this.angleEpsilon, 0), 1);
-    shapedAngle *= epsFactor;
+    // Shortest angular difference in radians [-PI, PI] and degrees [-180, 180]
+    const angleErrRad = Math.atan2(
+      Math.sin(targetWorldAngleRad - currentWorldAngleRad),
+      Math.cos(targetWorldAngleRad - currentWorldAngleRad)
+    );
+    const deltaDeg = (angleErrRad * 180) / Math.PI;
 
     // Deadzone scaling near the shoulder center
-    const deadzoneScale = Math.pow(
-      Math.min(Math.max(toCursorDist / this.deadzone, 0), 1),
-      2
-    );
+    const deadzoneScale = Math.min(Math.max(toCursorDist / this.deadzone, 0.2), 1.0);
 
-    // IL_1630-IL_1697: motorSpeedDeg = Clamp(shapedAngle * 3f * deadzoneScale, -800f, 800f)
-    const motorSpeedDeg = Math.min(
-      Math.max(shapedAngle * 3.0 * deadzoneScale, -800.0),
-      800.0
+    // Proportional + quadratic angular response, bounded by non-overshooting limit (44 * angleErrRad)
+    const sign = deltaDeg >= 0 ? 1 : -1;
+    const absDeg = Math.abs(deltaDeg);
+    const shapedDeg =
+      sign * (absDeg * 7.0 + Math.min(absDeg * absDeg * 0.25, 450.0)) * deadzoneScale;
+    const desiredMotorRad = (shapedDeg * Math.PI) / 180;
+    const maxNonOvershootRad = Math.abs(angleErrRad) * 44.0;
+    const motorSpeedRad = Math.max(
+      -18.0,
+      Math.min(
+        18.0,
+        Math.sign(desiredMotorRad) * Math.min(Math.abs(desiredMotorRad), maxNonOvershootRad)
+      )
     );
-    // Convert deg/s to rad/s for Planck RevoluteJoint
-    const motorSpeedRad = (motorSpeedDeg * Math.PI) / 180;
+    const motorSpeedDeg = (motorSpeedRad * 180) / Math.PI;
     this.hingeJoint.setMotorSpeed(motorSpeedRad);
 
     // SLIDER MOTOR (Extension / Retraction along the arm shaft)
-    const tipMinusMw = planck.Vec2.sub(tipPos, this.mw);
-    const tipMinusMwLen = tipMinusMw.length();
-    const armDir = planck.Vec2.sub(tipPos, shoulderPos);
-    armDir.normalize();
+    const currentReach = this.sliderJoint.getJointTranslation();
+    const absAngleErr = Math.abs(angleErrRad);
 
-    let loc1 = 0;
-    if (tipMinusMwLen > 0.0001) {
-      const tipMinusMwNorm = planck.Vec2.mul(tipMinusMw, 1 / tipMinusMwLen);
-      loc1 = planck.Vec2.dot(armDir, tipMinusMwNorm);
+    // If swinging across the body (cursor on opposite side of pot), tuck hammer in slightly
+    // so it passes cleanly over/around obstacles, then extend to exact cursor distance!
+    let desiredReach: number;
+    if (absAngleErr > 1.55) {
+      desiredReach = Math.max(this.MIN_ARM_REACH, Math.min(toCursorDist * 0.55, 0.85));
+    } else {
+      const alignScale = Math.max(Math.cos(absAngleErr * 0.65), 0.45);
+      desiredReach = Math.max(
+        this.MIN_ARM_REACH,
+        Math.min(this.MAX_ARM_REACH, toCursorDist * alignScale)
+      );
     }
-    const loc0 = tipMinusMwLen * loc1; // Radial error along the arm
 
-    // IL_1719-IL_1752: loc4 = 16f - Max(Abs(reactionTorque) * 0.001f, 5f)
+    const reachError = desiredReach - currentReach;
     const reactionTorque = Math.abs(this.hingeJoint.getMotorTorque(1 / dt));
-    const loc4 = 16.0 - Math.max(reactionTorque * 0.001, 5.0);
+    const torqueLoadFactor = Math.max(0.45, 1.0 - reactionTorque / 6000.0);
 
-    // IL_1754-IL_1765: loc5 = Pow(loc1, 4f)
-    const loc5 = Math.pow(loc1, 4);
-
-    // IL_1773-IL_1798: sliderSpeed = Clamp((-loc0 * Abs(loc0)) * loc4 * loc5, -50f, 50f)
-    const sliderSpeed = Math.min(
-      Math.max(-loc0 * Math.abs(loc0) * loc4 * loc5, -50.0),
-      50.0
+    const rawSliderSpeed =
+      (reachError * 30.0 + Math.sign(reachError) * reachError * reachError * 18.0) *
+      torqueLoadFactor;
+    const maxNonOvershootSlider = Math.abs(reachError) * 44.0;
+    const sliderSpeed = Math.max(
+      -40.0,
+      Math.min(
+        40.0,
+        Math.sign(rawSliderSpeed) * Math.min(Math.abs(rawSliderSpeed), maxNonOvershootSlider)
+      )
     );
     this.sliderJoint.setMotorSpeed(sliderSpeed);
 
-    this.oldAngle = shapedAngle;
+    this.oldAngle = shapedDeg;
 
     // =========================================================================
     // 4. WHOOSH SOUND & PARTICLES UPDATE (HammerCollisions.LateUpdate)

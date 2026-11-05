@@ -164,7 +164,7 @@ export class GameRenderer {
       ctx,
       potPos.x,
       potPos.y,
-      localPlayer.potBody.getAngle(),
+      localPlayer.visualPotTilt,
       tipPos.x,
       tipPos.y,
       playerColor,

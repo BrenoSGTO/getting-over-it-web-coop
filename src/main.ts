@@ -168,8 +168,8 @@ document.addEventListener('pointerlockchange', () => {
 window.addEventListener('mousemove', (e) => {
   if (isPointerLocked) {
     player.addMouseDelta(e.movementX, e.movementY);
-  } else if (e.buttons === 1 && e.target === canvas) {
-    // Allow dragging on canvas even if pointer lock isn't active
+  } else if (e.target === canvas) {
+    // Follow mouse immediately on canvas even before Pointer Lock is engaged
     const worldMouse = renderer.screenToWorld(e.clientX, e.clientY);
     player.setWorldMouseFallback(worldMouse.x, worldMouse.y);
   }
@@ -236,7 +236,7 @@ function gameLoop(now: number) {
       network.broadcastState(
         potPos.x,
         potPos.y,
-        player.potBody.getAngle(),
+        player.visualPotTilt,
         potVel.x,
         potVel.y,
         tipPos.x,
