@@ -49,11 +49,30 @@ const btnCreateRoom = document.getElementById('btn-create-room') as HTMLButtonEl
 const btnJoinRoom = document.getElementById('btn-join-room') as HTMLButtonElement;
 const roomCodeInput = document.getElementById('room-code-input') as HTMLInputElement;
 const btnCopyLink = document.getElementById('btn-copy-link') as HTMLButtonElement;
-const chkTether = document.getElementById('chk-tether') as HTMLInputElement;
+
+// Tether Indicator & Host Controls
+const tetherStatusBadge = document.getElementById('tether-status-badge')!;
+const btnToggleTether = document.getElementById('btn-toggle-tether') as HTMLButtonElement;
+
+// Teleport Controls
 const hostTeleportBox = document.getElementById('host-teleport-box')!;
+const tpBoxTitle = document.getElementById('tp-box-title')!;
+const tpBoxSubtitle = document.getElementById('tp-box-subtitle')!;
 const tpFromSelect = document.getElementById('tp-from-select') as HTMLSelectElement;
+const tpFromLocked = document.getElementById('tp-from-locked')!;
 const tpToSelect = document.getElementById('tp-to-select') as HTMLSelectElement;
 const btnHostTp = document.getElementById('btn-host-tp') as HTMLButtonElement;
+const tpArrow = document.querySelector('.tp-arrow') as HTMLElement | null;
+
+// Lobby Config Modal Elements
+const modalLobbyConfig = document.getElementById('modal-lobby-config')!;
+const modalChkTether = document.getElementById('modal-chk-tether') as HTMLInputElement;
+const modalChkTeleport = document.getElementById('modal-chk-teleport') as HTMLInputElement;
+const modalTpRulesGroup = document.getElementById('modal-tp-rules-group')!;
+const btnModalConfirm = document.getElementById('btn-modal-confirm') as HTMLButtonElement;
+const btnModalCancel = document.getElementById('btn-modal-cancel') as HTMLButtonElement;
+const btnCloseLobbyModal = document.getElementById('btn-close-lobby-modal') as HTMLButtonElement;
+
 const playerCountEl = document.getElementById('player-count')!;
 const playersListEl = document.getElementById('players-list')!;
 const chatMessagesEl = document.getElementById('chat-messages')!;
@@ -92,6 +111,60 @@ function showToast(msg: string) {
   }, 4000);
 }
 
+function refreshLobbyUI() {
+  const isOnline = network.isConnected;
+  const isHost = network.isHost;
+  const settings = network.lobbySettings;
+
+  // 1. Tether indicator & host toggle button
+  if (tetherStatusBadge) {
+    tetherStatusBadge.textContent = settings.tether ? 'Ligada' : 'Desligada';
+    tetherStatusBadge.className = 'badge-tether ' + (settings.tether ? 'on' : 'off');
+  }
+  if (btnToggleTether) {
+    if (isOnline && isHost) {
+      btnToggleTether.classList.remove('hidden');
+    } else {
+      btnToggleTether.classList.add('hidden');
+    }
+  }
+
+  // 2. Teleport permissions:
+  // - teleportEnabled false: hide the teleport box for everyone
+  // - Host (leader): can pick any FROM player and any TO player
+  // - Non-host with mode 'self-to-player': FROM is locked to themselves; pick only TO player
+  // - Non-host with mode 'leader-only': hide the teleport box
+  if (!isOnline || !settings.teleportEnabled) {
+    hostTeleportBox.classList.add('hidden');
+  } else if (isHost) {
+    hostTeleportBox.classList.remove('hidden');
+    if (tpBoxTitle) tpBoxTitle.textContent = '⚡ TELEPORTE';
+    if (tpBoxSubtitle) {
+      tpBoxSubtitle.textContent =
+        settings.teleportMode === 'self-to-player'
+          ? 'Líder + jogadores podem se teleportar'
+          : 'Apenas o líder pode teleportar';
+    }
+    tpFromSelect.classList.remove('hidden');
+    if (tpFromLocked) tpFromLocked.classList.add('hidden');
+    if (tpArrow) tpArrow.classList.remove('hidden');
+    btnHostTp.textContent = 'Teleportar Jogador';
+  } else if (settings.teleportMode === 'self-to-player') {
+    hostTeleportBox.classList.remove('hidden');
+    if (tpBoxTitle) tpBoxTitle.textContent = '⚡ TELEPORTE';
+    if (tpBoxSubtitle) {
+      tpBoxSubtitle.textContent = 'Você pode se teleportar até outro jogador';
+    }
+    tpFromSelect.classList.add('hidden');
+    if (tpFromLocked) tpFromLocked.classList.remove('hidden');
+    if (tpArrow) tpArrow.classList.remove('hidden');
+    btnHostTp.textContent = 'Teleportar até Jogador';
+  } else {
+    // Non-host with leader-only
+    hostTeleportBox.classList.add('hidden');
+  }
+}
+
 // ============================================================================
 // 3. CO-OP NETWORK SETUP & URL INVITE AUTO-JOIN
 // ============================================================================
@@ -102,12 +175,15 @@ const network = new CoopNetwork(world, {
     if (online && code) {
       lobbyControls.classList.add('hidden');
       activeRoomBox.classList.remove('hidden');
-      hostTeleportBox.classList.remove('hidden');
       activeRoomCode.textContent = code;
       const url = new URL(window.location.href);
       url.searchParams.set('room', code);
       window.history.replaceState({}, '', url.toString());
+      refreshLobbyUI();
     }
+  },
+  onLobbySettingsChange: () => {
+    refreshLobbyUI();
   },
   onToast: (msg) => showToast(msg),
   onTeleportCommand: (destX, destY, destName) => {
@@ -147,8 +223,54 @@ playerColorInput.addEventListener('input', () => {
   localStorage.setItem('goi_player_color', network.myColor);
 });
 
+function openLobbyModal() {
+  if (document.pointerLockElement === canvas && document.exitPointerLock) {
+    document.exitPointerLock();
+  }
+  player.setInputActive(false);
+  modalLobbyConfig.classList.remove('hidden');
+}
+
+function closeLobbyModal() {
+  modalLobbyConfig.classList.add('hidden');
+}
+
 btnCreateRoom.addEventListener('click', () => {
-  network.hostRoom().catch(() => {});
+  openLobbyModal();
+});
+
+modalChkTeleport.addEventListener('change', () => {
+  modalTpRulesGroup.classList.toggle('disabled', !modalChkTeleport.checked);
+});
+
+btnModalCancel.addEventListener('click', () => {
+  closeLobbyModal();
+});
+
+btnCloseLobbyModal.addEventListener('click', () => {
+  closeLobbyModal();
+});
+
+modalLobbyConfig.addEventListener('click', (e) => {
+  if (e.target === modalLobbyConfig) {
+    closeLobbyModal();
+  }
+});
+
+btnModalConfirm.addEventListener('click', () => {
+  const tether = modalChkTether.checked;
+  const teleportEnabled = modalChkTeleport.checked;
+  const tpRadio = document.querySelector('input[name="modal-tp-mode"]:checked') as HTMLInputElement | null;
+  const teleportMode: 'leader-only' | 'self-to-player' =
+    tpRadio && tpRadio.value === 'self-to-player' ? 'self-to-player' : 'leader-only';
+
+  closeLobbyModal();
+  network.hostRoom(undefined, { tether, teleportEnabled, teleportMode }).catch(() => {});
+});
+
+btnToggleTether.addEventListener('click', () => {
+  if (!network.isHost) return;
+  network.updateLobbySettings({ tether: !network.lobbySettings.tether });
 });
 
 btnJoinRoom.addEventListener('click', () => {
@@ -167,14 +289,28 @@ btnCopyLink.addEventListener('click', () => {
 });
 
 btnHostTp.addEventListener('click', () => {
-  const fromId = tpFromSelect.value;
+  if (!network.lobbySettings.teleportEnabled) {
+    showToast('Teleporte está desativado nesta sala!');
+    return;
+  }
+
+  const isHost = network.isHost;
+  const isSelfToPlayer = network.lobbySettings.teleportMode === 'self-to-player';
+
+  if (!isHost && !isSelfToPlayer) {
+    showToast('Apenas o líder pode teleportar jogadores!');
+    return;
+  }
+
+  // Non-host in self-to-player mode can only teleport themselves
+  const fromId = isHost ? tpFromSelect.value : network.myPeerId;
   const toId = tpToSelect.value;
   if (!fromId || !toId) {
     showToast('Aguardando mais jogadores na sala!');
     return;
   }
   if (fromId === toId) {
-    showToast('Escolha dois jogadores diferentes para o teleporte!');
+    showToast(isHost ? 'Escolha dois jogadores diferentes para o teleporte!' : 'Escolha outro jogador como destino!');
     return;
   }
 
@@ -198,13 +334,13 @@ btnHostTp.addEventListener('click', () => {
     destName = destPlayer.name;
   }
 
-  // Execute teleport: if fromId is the host themselves, teleport locally; otherwise send Host Command packet
+  // Execute teleport: if fromId is ourselves (host or non-host self-to-player), teleport locally without 't' packet
   if (fromId === network.myPeerId) {
     player.teleportTo(destX, destY);
     renderer.camPos.x = destX;
     renderer.camPos.y = destY + 1;
     showToast(`⚡ Você se teleportou até ${destName}!`);
-  } else {
+  } else if (isHost) {
     const targetRemote = network.remotePlayers.get(fromId);
     const targetName = targetRemote ? targetRemote.name : 'Jogador';
     network.sendHostTeleportCommand(fromId, destX, destY, destName);
@@ -252,6 +388,7 @@ if (roomFromUrl) {
 let isPointerLocked = false;
 
 canvas.addEventListener('click', () => {
+  if (!modalLobbyConfig.classList.contains('hidden')) return;
   if (!isPointerLocked && canvas.requestPointerLock) {
     canvas.requestPointerLock();
   }
@@ -284,6 +421,12 @@ sensSlider.addEventListener('input', () => {
 const SAVE_KEY = 'goi_original_map_saved_pos_v4';
 
 window.addEventListener('keydown', (e) => {
+  if (!modalLobbyConfig.classList.contains('hidden')) {
+    if (e.key === 'Escape') {
+      closeLobbyModal();
+    }
+    return;
+  }
   if (e.key === 'Escape') {
     player.setInputActive(false);
     if (document.activeElement === chatInput) {
@@ -336,22 +479,28 @@ if (savedPosJson) {
 }
 
 const FIXED_DT = 1 / 60;
+const MAX_PHYSICS_SUBSTEPS = 8;
 let accumulator = 0;
 let lastFrameTime = performance.now();
 let startTime = performance.now();
 let frameCounter = 0;
 
 function gameLoop(now: number) {
-  const frameDt = Math.min((now - lastFrameTime) / 1000, 0.05);
+  const frameDt = Math.min((now - lastFrameTime) / 1000, 0.25);
   lastFrameTime = now;
   accumulator += frameDt;
 
-  while (accumulator >= FIXED_DT) {
+  let substeps = 0;
+  while (accumulator >= FIXED_DT && substeps < MAX_PHYSICS_SUBSTEPS) {
     player.fixedUpdate(FIXED_DT);
-    network.updateRemotePlayers(FIXED_DT, player.potBody, chkTether.checked);
+    network.updateRemotePlayers(FIXED_DT, player.potBody, network.lobbySettings.tether);
     world.step(FIXED_DT, 8, 4);
     renderer.updateCamera(FIXED_DT, player);
     accumulator -= FIXED_DT;
+    substeps++;
+  }
+  if (accumulator >= FIXED_DT) {
+    accumulator = 0;
   }
 
   frameCounter++;
@@ -387,7 +536,7 @@ function gameLoop(now: number) {
     network.myName,
     network.myColor,
     network.remotePlayers,
-    chkTether.checked,
+    network.lobbySettings.tether,
     activeLocalBubble
   );
 
@@ -435,6 +584,7 @@ function updateHUD(now: number) {
 
   // Update Co-op player list & Host Teleport Dropdowns
   if (network.isConnected) {
+    refreshLobbyUI();
     playerCountEl.textContent = String(1 + network.remotePlayers.size);
     const hostCrown = network.isHost ? ' 👑' : '';
     let html = `<li>

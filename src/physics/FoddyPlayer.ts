@@ -364,15 +364,10 @@ export class FoddyPlayer {
       if (!terrainData || !terrainData.id) return;
 
       const tipPos = this.tipBody.getPosition();
-      // If the tip is inside this terrain block (or any block), disable contact so it can freely exit
+      // If the tip is inside this contacting terrain block, disable contact so it can freely exit
       const block = this.level.getBlockById(terrainData.id);
       if (block && this.level.isPointInsideBlock(tipPos.x, tipPos.y, block)) {
         contact.setEnabled(false);
-      } else {
-        const containingBlock = this.level.getContainingBlock(tipPos.x, tipPos.y);
-        if (containingBlock) {
-          contact.setEnabled(false);
-        }
       }
     });
   }

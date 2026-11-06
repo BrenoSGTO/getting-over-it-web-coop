@@ -33,18 +33,26 @@ export interface RemotePlayerState {
   tipBody?: planck.Body;
 }
 
+export interface LobbySettings {
+  tether: boolean;
+  teleportEnabled: boolean;
+  teleportMode: 'leader-only' | 'self-to-player';
+}
+
 /**
  * Ultra-compact network wire format to minimize bandwidth (~35 bytes per state packet!):
  * - State tuple:    ['s', peerId, potX*100, potY*100, potVX*20, potVY*20, tipX*100, tipY*100]
  * - Meta tuple:     ['m', peerId, name, color, isHostFlag]
  * - Teleport tuple: ['t', senderPeerId, targetPeerId, destX*100, destY*100, destPlayerName]
  * - Chat tuple:     ['c', senderPeerId, senderName, senderColor, messageText]
+ * - Settings tuple: ['g', hostPeerId, tetherFlag, tpFlag, modeFlag]
  */
 export type CompactPacket =
   | ['s', string, number, number, number, number, number, number]
   | ['m', string, string, string, number?]
   | ['t', string, string, number, number, string]
-  | ['c', string, string, string, string];
+  | ['c', string, string, string, string]
+  | ['g', string, number, number, number];
 
 /**
  * Lightweight MQTT v3.1.1 over WSS Relay Client
@@ -273,6 +281,12 @@ export class CoopNetwork {
   public myColor = '#f59e0b';
   public isConnected = false;
   public isHost = false;
+  public hostPeerId: string | null = null;
+  public lobbySettings: LobbySettings = {
+    tether: false,
+    teleportEnabled: true,
+    teleportMode: 'leader-only',
+  };
   private isConnectingCode = '';
 
   // Delta-compression & rate-limiting state
@@ -287,6 +301,7 @@ export class CoopNetwork {
   private onToast?: (msg: string) => void;
   private onTeleportCommand?: (destX: number, destY: number, destName: string) => void;
   private onChatMessage?: (senderName: string, senderColor: string, text: string, isSelf: boolean) => void;
+  private onLobbySettingsChange?: (settings: LobbySettings) => void;
 
   constructor(
     private world: planck.World,
@@ -295,12 +310,14 @@ export class CoopNetwork {
       onToast?: (msg: string) => void;
       onTeleportCommand?: (destX: number, destY: number, destName: string) => void;
       onChatMessage?: (senderName: string, senderColor: string, text: string, isSelf: boolean) => void;
+      onLobbySettingsChange?: (settings: LobbySettings) => void;
     }
   ) {
     this.onStatusChange = callbacks?.onStatusChange;
     this.onToast = callbacks?.onToast;
     this.onTeleportCommand = callbacks?.onTeleportCommand;
     this.onChatMessage = callbacks?.onChatMessage;
+    this.onLobbySettingsChange = callbacks?.onLobbySettingsChange;
   }
 
   private generateShortCode(): string {
@@ -330,7 +347,10 @@ export class CoopNetwork {
     ];
   }
 
-  public hostRoom(customCode?: string): Promise<string> {
+  public hostRoom(customCode?: string, settings?: LobbySettings): Promise<string> {
+    if (settings) {
+      this.lobbySettings = { ...settings };
+    }
     const raw = customCode ? customCode.trim().toUpperCase() : this.generateShortCode();
     const code = raw.startsWith('GOI-') ? raw : `GOI-${raw}`;
     return this.connectToRoom(code, true);
@@ -340,6 +360,14 @@ export class CoopNetwork {
     const cleanCode = rawCode.trim().toUpperCase();
     const formattedCode = cleanCode.startsWith('GOI-') ? cleanCode : `GOI-${cleanCode}`;
     const wasHost = sessionStorage.getItem(`goi_host_${formattedCode}`) === '1';
+    if (!wasHost) {
+      this.lobbySettings = {
+        tether: false,
+        teleportEnabled: true,
+        teleportMode: 'leader-only',
+      };
+      this.hostPeerId = null;
+    }
     return this.connectToRoom(formattedCode, wasHost).then(() => {});
   }
 
@@ -352,6 +380,9 @@ export class CoopNetwork {
     this.isConnectingCode = code;
     this.roomCode = code;
     this.isHost = asHost;
+    if (asHost) {
+      this.hostPeerId = this.myPeerId;
+    }
     sessionStorage.setItem(`goi_host_${code}`, asHost ? '1' : '0');
     this.onStatusChange?.(`Conectando à sala ${code}...`, false, '');
 
@@ -364,6 +395,10 @@ export class CoopNetwork {
           this.onStatusChange?.(`Sala Ativa (${code})`, true, code);
           this.onToast?.(`Sala ${code} conectada! Envie o link para seu amigo.`);
           this.sendMetadataPacket();
+          if (this.isHost) {
+            this.sendLobbySettingsPacket();
+          }
+          this.onLobbySettingsChange?.(this.lobbySettings);
         }
         if (!resolved) {
           resolved = true;
@@ -414,6 +449,9 @@ export class CoopNetwork {
       this.connections.set(conn.peer, conn);
       onOpenCallback?.();
       this.sendMetadataPacket();
+      if (this.isHost) {
+        this.sendLobbySettingsPacket();
+      }
     });
 
     conn.on('data', (rawData) => {
@@ -438,6 +476,26 @@ export class CoopNetwork {
     this.lastMetaSendTime = performance.now();
   }
 
+  public sendLobbySettingsPacket() {
+    if (!this.isConnected || !this.isHost) return;
+    const pkt: CompactPacket = [
+      'g',
+      this.myPeerId,
+      this.lobbySettings.tether ? 1 : 0,
+      this.lobbySettings.teleportEnabled ? 1 : 0,
+      this.lobbySettings.teleportMode === 'self-to-player' ? 1 : 0,
+    ];
+    this.sendRawPacket(pkt);
+  }
+
+  public updateLobbySettings(settings: Partial<LobbySettings>) {
+    this.lobbySettings = { ...this.lobbySettings, ...settings };
+    if (this.isHost) {
+      this.sendLobbySettingsPacket();
+    }
+    this.onLobbySettingsChange?.(this.lobbySettings);
+  }
+
   /**
    * Party Teleport Command (available to all players in the room):
    * Sends a ['t', senderPeerId, targetPeerId, destX*100, destY*100, destName] packet
@@ -449,7 +507,7 @@ export class CoopNetwork {
     destY: number,
     destName: string
   ) {
-    if (!this.isConnected) return;
+    if (!this.isConnected || !this.lobbySettings.teleportEnabled) return;
     const pkt: CompactPacket = [
       't',
       this.myPeerId,
@@ -504,6 +562,9 @@ export class CoopNetwork {
 
     if (type === 'm') {
       const [, , name, color, isHostFlag] = pkt;
+      if (isHostFlag === 1) {
+        this.hostPeerId = peerId;
+      }
       const remote = this.remotePlayers.get(peerId);
       if (remote) {
         remote.name = name || remote.name;
@@ -514,8 +575,63 @@ export class CoopNetwork {
       return;
     }
 
+    if (type === 'g') {
+      if (this.isHost) return; // Host is authority
+
+      const [, , tetherFlag, tpFlag, modeFlag] = pkt;
+      const remote = this.remotePlayers.get(peerId);
+      const isKnownHost =
+        (this.hostPeerId && this.hostPeerId === peerId) ||
+        remote?.isHost === true ||
+        !this.hostPeerId;
+
+      if (!isKnownHost) return;
+
+      if (!this.hostPeerId) {
+        this.hostPeerId = peerId;
+      }
+      if (remote) {
+        remote.isHost = true;
+      }
+
+      const newTether = tetherFlag === 1;
+      const newTpEnabled = tpFlag === 1;
+      const newTpMode: 'leader-only' | 'self-to-player' =
+        modeFlag === 1 ? 'self-to-player' : 'leader-only';
+
+      const changed =
+        this.lobbySettings.tether !== newTether ||
+        this.lobbySettings.teleportEnabled !== newTpEnabled ||
+        this.lobbySettings.teleportMode !== newTpMode;
+
+      this.lobbySettings = {
+        tether: newTether,
+        teleportEnabled: newTpEnabled,
+        teleportMode: newTpMode,
+      };
+
+      if (changed) {
+        this.onToast?.('Configurações do lobby atualizadas');
+      }
+      this.onLobbySettingsChange?.(this.lobbySettings);
+      return;
+    }
+
     if (type === 't') {
-      const [, , targetPeerId, qDestX, qDestY, destName] = pkt;
+      if (!this.lobbySettings.teleportEnabled) return;
+
+      const [, senderPeerId, targetPeerId, qDestX, qDestY, destName] = pkt;
+      const isSenderHost =
+        senderPeerId === this.hostPeerId ||
+        this.remotePlayers.get(senderPeerId)?.isHost === true;
+      const isSelfTeleport =
+        this.lobbySettings.teleportMode === 'self-to-player' &&
+        senderPeerId === targetPeerId;
+
+      if (!isSenderHost && !isSelfTeleport) {
+        return;
+      }
+
       const destX = qDestX / 100;
       const destY = qDestY / 100;
       if (targetPeerId === this.myPeerId) {
@@ -570,6 +686,9 @@ export class CoopNetwork {
         this.onToast?.(`🐒 Um Macaco entrou na selva!`);
         // Reply with our metadata so the newcomer gets our name & color immediately
         this.sendMetadataPacket();
+        if (this.isHost) {
+          this.sendLobbySettingsPacket();
+        }
       }
 
       const dtNet = Math.max((now - remote.lastPacketTime) / 1000, 0.04);
@@ -679,6 +798,9 @@ export class CoopNetwork {
     // Refresh metadata every 4 seconds (tiny 28-byte packet)
     if (now - this.lastMetaSendTime > 4000) {
       this.sendMetadataPacket();
+      if (this.isHost) {
+        this.sendLobbySettingsPacket();
+      }
     }
 
     // Throttle state packets to 12Hz (80ms interval) to keep 3G buffer 100% lag-free
@@ -795,6 +917,7 @@ export class CoopNetwork {
 
   public cleanup() {
     this.isConnectingCode = '';
+    this.hostPeerId = null;
     for (const peerId of Array.from(this.remotePlayers.keys())) {
       this.removeRemotePlayer(peerId);
     }

@@ -86,17 +86,24 @@
           <button id="btn-copy-link" class="btn btn-small">Copiar Link</button>
         </div>
 
-        <div class="coop-options">
-          <label class="checkbox-label" title="Quando ativado, um cipó elástico prende sua privada à do amigo!">
-            <input type="checkbox" id="chk-tether" />
-            <span>Cipó Cooperativo (Elástico)</span>
-          </label>
+        <div class="coop-options" id="tether-indicator-box">
+          <div class="tether-status-wrap">
+            <span class="tether-label">Corda elástica:</span>
+            <span id="tether-status-badge" class="badge-tether off">Desligada</span>
+          </div>
+          <button id="btn-toggle-tether" class="btn btn-small btn-outline hidden" title="Alternar corda elástica (Líder)">Alternar</button>
         </div>
 
-        <div id="host-teleport-box" class="host-tp-box">
-          <div class="small-label">⚡ TELEPORTE DA SALA</div>
-          <div class="tp-row">
-            <select id="tp-from-select" class="tp-select" title="Quem vai ser teleportado"></select>
+        <div id="host-teleport-box" class="host-tp-box hidden">
+          <div class="tp-header">
+            <div class="small-label" id="tp-box-title">⚡ TELEPORTE</div>
+            <div class="tp-subtitle" id="tp-box-subtitle">Apenas o líder pode teleportar</div>
+          </div>
+          <div class="tp-row" id="tp-row-controls">
+            <div id="tp-from-container" class="tp-from-wrap">
+              <select id="tp-from-select" class="tp-select" title="Quem vai ser teleportado"></select>
+              <span id="tp-from-locked" class="tp-locked-badge hidden">Você</span>
+            </div>
             <span class="tp-arrow">➔</span>
             <select id="tp-to-select" class="tp-select" title="Para perto de quem"></select>
           </div>
@@ -115,6 +122,55 @@
         <div class="chat-input-row">
           <input type="text" id="chat-input" placeholder="Digite uma mensagem..." maxlength="140" />
           <button id="btn-send-chat" class="btn btn-small">Enviar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal Configurar Lobby -->
+    <div id="modal-lobby-config" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2>⚙️ Configurar Lobby</h2>
+          <button id="btn-close-lobby-modal" class="modal-close" title="Fechar">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-option-row">
+            <div class="option-info">
+              <span class="option-title">Corda elástica entre jogadores</span>
+              <span class="option-desc">Cipó cooperativo elástico que conecta os jogadores</span>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="modal-chk-tether" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="modal-option-row">
+            <div class="option-info">
+              <span class="option-title">Teleporte</span>
+              <span class="option-desc">Permitir teleporte na sala</span>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="modal-chk-teleport" checked />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div id="modal-tp-rules-group" class="modal-subgroup">
+            <span class="subgroup-title">Quem pode teleportar:</span>
+            <label class="radio-label">
+              <input type="radio" name="modal-tp-mode" value="leader-only" checked />
+              <span>Somente o líder do lobby</span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="modal-tp-mode" value="self-to-player" />
+              <span>Líder + cada jogador pode se teleportar até outro jogador</span>
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="btn-modal-cancel" class="btn btn-secondary">Cancelar</button>
+          <button id="btn-modal-confirm" class="btn btn-primary">Criar Sala e Gerar Link</button>
         </div>
       </div>
     </div>

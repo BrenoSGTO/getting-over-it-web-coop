@@ -139,6 +139,25 @@ export class GameRenderer {
   private stars: TwinkleStar[] = [];
   private voxelClouds: VoxelCloud[] = [];
 
+  // Terrain Chunk Cache (12m x 12m world-space chunks with LRU)
+  public texturesLoaded = false;
+  private loadedTextureCount = 0;
+  private chunkCache: Map<string, { canvas: HTMLCanvasElement; chunkX: number; chunkY: number }> =
+    new Map();
+  private lastPpm = 46;
+  private lastDpr = 1;
+  private readonly CHUNK_SIZE = 12; // 12 meters per chunk
+  private readonly MAX_CHUNKS = 40;
+
+  // Sky and Nebulae rendering caches
+  private cachedSkyGrad: CanvasGradient | null = null;
+  private cachedAltBucket = -1;
+  private cachedSkyH = 0;
+  private nebula1Grad: CanvasGradient | null = null;
+  private nebula2Grad: CanvasGradient | null = null;
+  private lastNebulaW = 0;
+  private lastNebulaH = 0;
+
   constructor(private canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d')!;
     this.resize();
@@ -149,11 +168,22 @@ export class GameRenderer {
     this.initVoxelClouds();
   }
 
+  public clearChunkCache() {
+    this.chunkCache.clear();
+  }
+
   private loadRealisticSlopTextures() {
     const materials: SurfaceMaterial[] = ['rock', 'wood', 'metal', 'ice'];
     for (const m of materials) {
       const img = new Image();
       img.src = `textures/${m}.png`;
+      const onDone = () => {
+        this.loadedTextureCount++;
+        if (this.loadedTextureCount >= materials.length) {
+          this.texturesLoaded = true;
+          this.clearChunkCache();
+        }
+      };
       img.onload = () => {
         const pat = this.ctx.createPattern(img, 'repeat');
         if (pat) {
@@ -166,6 +196,10 @@ export class GameRenderer {
           }
           this.slopPatterns[m] = pat;
         }
+        onDone();
+      };
+      img.onerror = () => {
+        onDone();
       };
     }
   }
@@ -211,6 +245,9 @@ export class GameRenderer {
     this.canvas.height = window.innerHeight * dpr;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.ctx.imageSmoothingEnabled = false;
+    this.clearChunkCache();
+    this.cachedSkyGrad = null;
+    this.cachedAltBucket = -1;
   }
 
   /**
@@ -267,55 +304,79 @@ export class GameRenderer {
     ctx.scale(ppm, -ppm);
     ctx.translate(-this.camPos.x, -this.camPos.y);
 
-    // 2. Draw Decorative Hanging Vines in Background
-    this.drawDecorativeVines(ctx, level);
+    const viewHalfW = w / ppm / 2 + 1;
+    const viewHalfH = h / ppm / 2 + 1;
+    const viewMinX = this.camPos.x - viewHalfW;
+    const viewMaxX = this.camPos.x + viewHalfW;
+    const viewMinY = this.camPos.y - viewHalfH;
+    const viewMaxY = this.camPos.y + viewHalfH;
 
-    // 3. Draw Signposts in Background
-    this.drawSignposts(ctx, level);
+    // 2. Draw Decorative Hanging Vines in Background (frustum culled)
+    this.drawDecorativeVines(ctx, level, viewMinX, viewMaxX, viewMinY, viewMaxY);
 
-    // 4. Draw Jungle Terrain Blocks (with Viewport Frustum Culling for max FPS)
-    const viewHalfW = w / ppm / 2 + 8;
-    const viewHalfH = h / ppm / 2 + 8;
-    for (const b of level.blocks) {
-      const blockHalfW = (b.width || b.radius || 1) / 2;
-      const blockHalfH = (b.height || b.radius || 1) / 2;
-      if (
-        Math.abs(b.x - this.camPos.x) > viewHalfW + blockHalfW ||
-        Math.abs(b.y - this.camPos.y) > viewHalfH + blockHalfH
-      ) {
-        continue;
-      }
+    // 3. Draw Signposts in Background (frustum culled)
+    this.drawSignposts(ctx, level, viewMinX, viewMaxX, viewMinY, viewMaxY);
 
-      ctx.save();
-      ctx.translate(b.x, b.y);
-      if (b.angle) ctx.rotate(b.angle);
+    // 4. Draw Jungle Terrain (Cached Chunks with World-Anchored Textures, or Fallback)
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
+    if (this.pixelsPerMeter !== this.lastPpm || dpr !== this.lastDpr) {
+      this.clearChunkCache();
+      this.lastPpm = this.pixelsPerMeter;
+      this.lastDpr = dpr;
+    }
 
-      const pat = this.slopPatterns[b.material];
-      ctx.fillStyle = pat || b.color;
+    if (this.texturesLoaded) {
+      const startChunkX = Math.floor(viewMinX / this.CHUNK_SIZE);
+      const endChunkX = Math.floor(viewMaxX / this.CHUNK_SIZE);
+      const startChunkY = Math.floor(viewMinY / this.CHUNK_SIZE);
+      const endChunkY = Math.floor(viewMaxY / this.CHUNK_SIZE);
 
-      if (b.shapeType === 'polygon' && b.vertices && b.vertices.length >= 3) {
-        ctx.beginPath();
-        ctx.moveTo(b.vertices[0].x, b.vertices[0].y);
-        for (let i = 1; i < b.vertices.length; i++) {
-          ctx.lineTo(b.vertices[i].x, b.vertices[i].y);
+      let chunksBuiltThisFrame = 0;
+      const MAX_CHUNKS_PER_FRAME = 2;
+
+      for (let cy = startChunkY; cy <= endChunkY; cy++) {
+        for (let cx = startChunkX; cx <= endChunkX; cx++) {
+          const key = `${cx},${cy}`;
+          let chunk = this.chunkCache.get(key);
+          if (!chunk) {
+            if (chunksBuiltThisFrame < MAX_CHUNKS_PER_FRAME) {
+              chunk = this.buildChunk(cx, cy, level);
+              this.chunkCache.set(key, chunk);
+              chunksBuiltThisFrame++;
+              if (this.chunkCache.size > this.MAX_CHUNKS) {
+                const oldestKey = this.chunkCache.keys().next().value;
+                if (oldestKey) this.chunkCache.delete(oldestKey);
+              }
+            }
+          }
+
+          if (chunk) {
+            // Update LRU order
+            this.chunkCache.delete(key);
+            this.chunkCache.set(key, chunk);
+
+            ctx.save();
+            ctx.translate(cx * this.CHUNK_SIZE, (cy + 1) * this.CHUNK_SIZE);
+            ctx.scale(1, -1);
+            ctx.drawImage(chunk.canvas, 0, 0, this.CHUNK_SIZE, this.CHUNK_SIZE);
+            ctx.restore();
+          } else {
+            // Fallback for chunks queued to build: render blocks in this chunk region
+            this.renderBlocksInRegion(
+              ctx,
+              level,
+              cx * this.CHUNK_SIZE,
+              (cx + 1) * this.CHUNK_SIZE,
+              cy * this.CHUNK_SIZE,
+              (cy + 1) * this.CHUNK_SIZE,
+              false
+            );
+          }
         }
-        ctx.closePath();
-        ctx.fill();
-      } else if (b.shapeType === 'box' && b.width && b.height) {
-        ctx.beginPath();
-        ctx.rect(-b.width / 2, -b.height / 2, b.width, b.height);
-        ctx.fill();
-      } else if (b.shapeType === 'circle' && b.radius) {
-        ctx.beginPath();
-        ctx.arc(0, 0, b.radius, 0, Math.PI * 2);
-        ctx.fill();
-
-        // If this is the summit trophy, draw a Giant Golden Banana on top!
-        if (b.id === 'summit-trophy') {
-          this.drawBananaHead(ctx, 1.35, true);
-        }
       }
-      ctx.restore();
+    } else {
+      // Textures still loading: fall back to flat colors direct render
+      this.renderBlocksInRegion(ctx, level, viewMinX, viewMaxX, viewMinY, viewMaxY, true);
     }
 
     // 5. Draw Elastic Co-op Vine Tether if enabled
@@ -378,13 +439,16 @@ export class GameRenderer {
     );
 
     // 8. Draw Sparks / Leaf Particles
-    for (const p of localPlayer.particles) {
+    if (localPlayer.particles.length > 0) {
       ctx.save();
-      ctx.globalAlpha = Math.max(p.life / p.maxLife, 0);
-      ctx.fillStyle = p.color;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.size / ppm, 0, Math.PI * 2);
-      ctx.fill();
+      for (let i = 0; i < localPlayer.particles.length; i++) {
+        const p = localPlayer.particles[i];
+        ctx.globalAlpha = Math.max(p.life / p.maxLife, 0);
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size / ppm, 0, Math.PI * 2);
+        ctx.fill();
+      }
       ctx.restore();
     }
 
@@ -608,16 +672,156 @@ export class GameRenderer {
     ctx.restore();
   }
 
-  private drawDecorativeVines(ctx: CanvasRenderingContext2D, level: LevelBuilder) {
-    ctx.save();
+  private buildChunk(
+    chunkX: number,
+    chunkY: number,
+    level: LevelBuilder
+  ): { canvas: HTMLCanvasElement; chunkX: number; chunkY: number } {
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
+    const renderScale = this.pixelsPerMeter * dpr;
+    const chunkCanvas = document.createElement('canvas');
+    chunkCanvas.width = Math.ceil(this.CHUNK_SIZE * renderScale);
+    chunkCanvas.height = Math.ceil(this.CHUNK_SIZE * renderScale);
+    const octx = chunkCanvas.getContext('2d');
+    if (!octx) return { canvas: chunkCanvas, chunkX, chunkY };
+
+    octx.imageSmoothingEnabled = false;
+
+    const minX = chunkX * this.CHUNK_SIZE;
+    const maxX = minX + this.CHUNK_SIZE;
+    const minY = chunkY * this.CHUNK_SIZE;
+    const maxY = minY + this.CHUNK_SIZE;
+
+    // Transform offscreen context: user coordinates match world coordinates in meters, +Y is up
+    octx.translate(-minX * renderScale, maxY * renderScale);
+    octx.scale(renderScale, -renderScale);
+
+    for (let i = 0; i < level.blocks.length; i++) {
+      const b = level.blocks[i];
+      if (
+        b.minX !== undefined &&
+        b.maxX !== undefined &&
+        b.minY !== undefined &&
+        b.maxY !== undefined
+      ) {
+        if (b.maxX < minX || b.minX > maxX || b.maxY < minY || b.minY > maxY) {
+          continue;
+        }
+      }
+
+      const pat = this.slopPatterns[b.material];
+      octx.fillStyle = pat || b.color;
+
+      if (b.shapeType === 'polygon' && b.worldVerts && b.worldVerts.length >= 3) {
+        octx.beginPath();
+        octx.moveTo(b.worldVerts[0].x, b.worldVerts[0].y);
+        for (let j = 1; j < b.worldVerts.length; j++) {
+          octx.lineTo(b.worldVerts[j].x, b.worldVerts[j].y);
+        }
+        octx.closePath();
+        octx.fill();
+      } else if (b.shapeType === 'circle' && b.radius) {
+        octx.beginPath();
+        octx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+        octx.fill();
+
+        if (b.id === 'summit-trophy') {
+          octx.save();
+          octx.translate(b.x, b.y);
+          this.drawBananaHead(octx, 1.35, true);
+          octx.restore();
+        }
+      } else if (b.shapeType === 'box' && b.width && b.height) {
+        octx.beginPath();
+        octx.rect(b.x - b.width / 2, b.y - b.height / 2, b.width, b.height);
+        octx.fill();
+      }
+    }
+
+    return { canvas: chunkCanvas, chunkX, chunkY };
+  }
+
+  private renderBlocksInRegion(
+    ctx: CanvasRenderingContext2D,
+    level: LevelBuilder,
+    minX: number,
+    maxX: number,
+    minY: number,
+    maxY: number,
+    useFlatColorsOnly: boolean
+  ) {
+    for (let i = 0; i < level.blocks.length; i++) {
+      const b = level.blocks[i];
+      if (
+        b.minX !== undefined &&
+        b.maxX !== undefined &&
+        b.minY !== undefined &&
+        b.maxY !== undefined
+      ) {
+        if (b.maxX < minX || b.minX > maxX || b.maxY < minY || b.minY > maxY) {
+          continue;
+        }
+      }
+
+      ctx.fillStyle = useFlatColorsOnly ? b.color : (this.slopPatterns[b.material] || b.color);
+
+      if (b.shapeType === 'polygon' && b.worldVerts && b.worldVerts.length >= 3) {
+        ctx.beginPath();
+        ctx.moveTo(b.worldVerts[0].x, b.worldVerts[0].y);
+        for (let j = 1; j < b.worldVerts.length; j++) {
+          ctx.lineTo(b.worldVerts[j].x, b.worldVerts[j].y);
+        }
+        ctx.closePath();
+        ctx.fill();
+      } else if (b.shapeType === 'circle' && b.radius) {
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (b.id === 'summit-trophy') {
+          ctx.save();
+          ctx.translate(b.x, b.y);
+          this.drawBananaHead(ctx, 1.35, true);
+          ctx.restore();
+        }
+      } else if (b.shapeType === 'box' && b.width && b.height) {
+        ctx.beginPath();
+        ctx.rect(b.x - b.width / 2, b.y - b.height / 2, b.width, b.height);
+        ctx.fill();
+      }
+    }
+  }
+
+  private drawDecorativeVines(
+    ctx: CanvasRenderingContext2D,
+    level: LevelBuilder,
+    viewMinX: number,
+    viewMaxX: number,
+    viewMinY: number,
+    viewMaxY: number
+  ) {
+    let hasDrawn = false;
     for (const v of level.decorativeVines) {
+      const vMinX = Math.min(v.x1, v.x2);
+      const vMaxX = Math.max(v.x1, v.x2);
+      const vMinY = Math.min(v.y1, v.y2) - v.sag;
+      const vMaxY = Math.max(v.y1, v.y2);
+      if (vMaxX < viewMinX || vMinX > viewMaxX || vMaxY < viewMinY || vMinY > viewMaxY) {
+        continue;
+      }
+
+      if (!hasDrawn) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(22, 163, 74, 0.55)';
+        ctx.lineWidth = 0.06;
+        ctx.lineCap = 'round';
+        hasDrawn = true;
+      }
+
       const midX = (v.x1 + v.x2) / 2;
       const midY = Math.min(v.y1, v.y2) - v.sag;
 
       // Main hanging vine rope
-      ctx.strokeStyle = 'rgba(22, 163, 74, 0.55)';
-      ctx.lineWidth = 0.06;
-      ctx.lineCap = 'round';
       ctx.beginPath();
       ctx.moveTo(v.x1, v.y1);
       ctx.quadraticCurveTo(midX, midY, v.x2, v.y2);
@@ -634,11 +838,24 @@ export class GameRenderer {
         ctx.fill();
       }
     }
-    ctx.restore();
+    if (hasDrawn) {
+      ctx.restore();
+    }
   }
 
-  private drawSignposts(ctx: CanvasRenderingContext2D, level: LevelBuilder) {
+  private drawSignposts(
+    ctx: CanvasRenderingContext2D,
+    level: LevelBuilder,
+    viewMinX: number,
+    viewMaxX: number,
+    viewMinY: number,
+    viewMaxY: number
+  ) {
     for (const s of level.signposts) {
+      if (s.x + 4 < viewMinX || s.x - 4 > viewMaxX || s.y + 2 < viewMinY || s.y - 2 > viewMaxY) {
+        continue;
+      }
+
       ctx.save();
       ctx.translate(s.x, s.y);
       ctx.scale(1 / this.pixelsPerMeter, -1 / this.pixelsPerMeter);
@@ -736,12 +953,19 @@ export class GameRenderer {
     const now = performance.now();
 
     // 1. Dynamic sky gradient transitioning smoothly based on altitude altRatio
-    const { top, mid, bottom } = getSkyColors(altRatio);
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, `rgb(${top[0]}, ${top[1]}, ${top[2]})`);
-    grad.addColorStop(0.55, `rgb(${mid[0]}, ${mid[1]}, ${mid[2]})`);
-    grad.addColorStop(1, `rgb(${bottom[0]}, ${bottom[1]}, ${bottom[2]})`);
-    ctx.fillStyle = grad;
+    // Cache the gradient: recreate only when altitude bucket changes or on resize
+    const altBucket = Math.round(altRatio * 200);
+    if (altBucket !== this.cachedAltBucket || h !== this.cachedSkyH || !this.cachedSkyGrad) {
+      const { top, mid, bottom } = getSkyColors(altRatio);
+      const grad = ctx.createLinearGradient(0, 0, 0, h);
+      grad.addColorStop(0, `rgb(${top[0]}, ${top[1]}, ${top[2]})`);
+      grad.addColorStop(0.55, `rgb(${mid[0]}, ${mid[1]}, ${mid[2]})`);
+      grad.addColorStop(1, `rgb(${bottom[0]}, ${bottom[1]}, ${bottom[2]})`);
+      this.cachedSkyGrad = grad;
+      this.cachedAltBucket = altBucket;
+      this.cachedSkyH = h;
+    }
+    ctx.fillStyle = this.cachedSkyGrad;
     ctx.fillRect(0, 0, w, h);
 
     // 2. Twinkling square stars (Upper-mountain & Cosmic space)
@@ -775,7 +999,7 @@ export class GameRenderer {
     // Sun is visible from ground (0m) to late sunset (180m / altRatio ~0.50)
     if (altRatio >= 0.58) return;
     const sunAlpha = Math.max(0, Math.min(1, (0.58 - altRatio) / 0.15));
-    if (sunAlpha <= 0) return;
+    if (sunAlpha <= 0.01) return;
 
     ctx.save();
     ctx.globalAlpha = sunAlpha;
@@ -826,7 +1050,7 @@ export class GameRenderer {
     // Moon rises during sunset (altRatio >= 0.28) and shines bright into space
     if (altRatio < 0.28) return;
     const moonAlpha = Math.max(0, Math.min(1, (altRatio - 0.28) / 0.18));
-    if (moonAlpha <= 0) return;
+    if (moonAlpha <= 0.01) return;
 
     ctx.save();
     ctx.globalAlpha = moonAlpha;
@@ -875,15 +1099,19 @@ export class GameRenderer {
   ) {
     if (altRatio < 0.32) return;
     const starAlpha = Math.max(0, Math.min(1, (altRatio - 0.32) / 0.2));
-    if (starAlpha <= 0) return;
+    if (starAlpha <= 0.01) return;
 
     ctx.save();
+    let currentFill = '';
     for (let i = 0; i < this.stars.length; i++) {
       const s = this.stars[i];
       const twinkle = 0.55 + 0.45 * Math.sin(now * 0.003 * s.speed + s.phase);
       const sx = ((s.xRatio * w - this.camPos.x * 1.2) % w + w) % w;
       const sy = ((s.yRatio * h - (this.camPos.y - 110) * 0.8) % h + h) % h;
-      ctx.fillStyle = s.color;
+      if (currentFill !== s.color) {
+        ctx.fillStyle = s.color;
+        currentFill = s.color;
+      }
       ctx.globalAlpha = starAlpha * s.baseAlpha * twinkle;
       const sz = Math.floor(s.size);
       ctx.fillRect(Math.floor(sx), Math.floor(sy), sz, sz);
@@ -899,62 +1127,81 @@ export class GameRenderer {
   ) {
     if (altRatio < 0.72) return;
     const cosmicAlpha = Math.max(0, Math.min(1, (altRatio - 0.72) / 0.16));
-    if (cosmicAlpha <= 0) return;
+    if (cosmicAlpha <= 0.01) return;
 
     ctx.save();
 
-    // Cosmic Nebula 1 (Deep galactic purple & indigo)
     const n1x = w * 0.32;
     const n1y = h * 0.28;
-    const g1 = ctx.createRadialGradient(n1x, n1y, 10, n1x, n1y, 280);
-    g1.addColorStop(0, `rgba(168, 85, 247, ${0.18 * cosmicAlpha})`);
-    g1.addColorStop(0.5, `rgba(59, 130, 246, ${0.09 * cosmicAlpha})`);
-    g1.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    ctx.fillStyle = g1;
-    ctx.fillRect(n1x - 280, n1y - 280, 560, 560);
-
-    // Cosmic Nebula 2 (Cosmic rose & cyan)
     const n2x = w * 0.78;
     const n2y = h * 0.38;
-    const g2 = ctx.createRadialGradient(n2x, n2y, 10, n2x, n2y, 320);
-    g2.addColorStop(0, `rgba(236, 72, 153, ${0.14 * cosmicAlpha})`);
-    g2.addColorStop(0.5, `rgba(99, 102, 241, ${0.07 * cosmicAlpha})`);
-    g2.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    ctx.fillStyle = g2;
+
+    // Cache static radial gradients on resize or dimension change
+    if (
+      w !== this.lastNebulaW ||
+      h !== this.lastNebulaH ||
+      !this.nebula1Grad ||
+      !this.nebula2Grad
+    ) {
+      const g1 = ctx.createRadialGradient(n1x, n1y, 10, n1x, n1y, 280);
+      g1.addColorStop(0, 'rgba(168, 85, 247, 0.18)');
+      g1.addColorStop(0.5, 'rgba(59, 130, 246, 0.09)');
+      g1.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      this.nebula1Grad = g1;
+
+      const g2 = ctx.createRadialGradient(n2x, n2y, 10, n2x, n2y, 320);
+      g2.addColorStop(0, 'rgba(236, 72, 153, 0.14)');
+      g2.addColorStop(0.5, 'rgba(99, 102, 241, 0.07)');
+      g2.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      this.nebula2Grad = g2;
+
+      this.lastNebulaW = w;
+      this.lastNebulaH = h;
+    }
+
+    // Cosmic Nebula 1
+    ctx.globalAlpha = cosmicAlpha;
+    ctx.fillStyle = this.nebula1Grad;
+    ctx.fillRect(n1x - 280, n1y - 280, 560, 560);
+
+    // Cosmic Nebula 2
+    ctx.fillStyle = this.nebula2Grad;
     ctx.fillRect(n2x - 320, n2y - 320, 640, 640);
 
     // Iconic Minecraft Overworld Planet visible from the summit!
     if (altRatio >= 0.82) {
       const planetAlpha = Math.max(0, Math.min(1, (altRatio - 0.82) / 0.14));
-      const px = w * 0.82 - ((this.camPos.x * 0.3) % 80);
-      const py = h * 0.68;
+      if (planetAlpha > 0.01) {
+        const px = w * 0.82 - ((this.camPos.x * 0.3) % 80);
+        const py = h * 0.68;
 
-      ctx.globalAlpha = cosmicAlpha * planetAlpha;
+        ctx.globalAlpha = cosmicAlpha * planetAlpha;
 
-      // Atmosphere aura
-      ctx.fillStyle = 'rgba(96, 165, 250, 0.24)';
-      ctx.fillRect(px - 28, py - 28, 56, 56);
+        // Atmosphere aura
+        ctx.fillStyle = 'rgba(96, 165, 250, 0.24)';
+        ctx.fillRect(px - 28, py - 28, 56, 56);
 
-      // Ocean globe base
-      ctx.fillStyle = '#1d4ed8';
-      ctx.fillRect(px - 22, py - 22, 44, 44);
+        // Ocean globe base
+        ctx.fillStyle = '#1d4ed8';
+        ctx.fillRect(px - 22, py - 22, 44, 44);
 
-      // Stepped Minecraft green continents
-      ctx.fillStyle = '#22c55e';
-      ctx.fillRect(px - 16, py - 16, 16, 12);
-      ctx.fillRect(px - 10, py - 4, 18, 14);
-      ctx.fillRect(px + 4, py + 2, 12, 12);
+        // Stepped Minecraft green continents
+        ctx.fillStyle = '#22c55e';
+        ctx.fillRect(px - 16, py - 16, 16, 12);
+        ctx.fillRect(px - 10, py - 4, 18, 14);
+        ctx.fillRect(px + 4, py + 2, 12, 12);
 
-      // Darker forest green accents
-      ctx.fillStyle = '#15803d';
-      ctx.fillRect(px - 12, py - 12, 8, 6);
-      ctx.fillRect(px - 6, py + 2, 8, 6);
+        // Darker forest green accents
+        ctx.fillStyle = '#15803d';
+        ctx.fillRect(px - 12, py - 12, 8, 6);
+        ctx.fillRect(px - 6, py + 2, 8, 6);
 
-      // Voxel cloud swirls
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.88)';
-      ctx.fillRect(px - 20, py - 8, 18, 4);
-      ctx.fillRect(px - 4, py + 8, 22, 4);
-      ctx.fillRect(px + 6, py - 14, 12, 4);
+        // Voxel cloud swirls
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.88)';
+        ctx.fillRect(px - 20, py - 8, 18, 4);
+        ctx.fillRect(px - 4, py + 8, 22, 4);
+        ctx.fillRect(px + 6, py - 14, 12, 4);
+      }
     }
 
     ctx.restore();
@@ -970,7 +1217,7 @@ export class GameRenderer {
     // Clouds vanish in space
     if (altRatio >= 0.82) return;
     const globalCloudAlpha = Math.max(0, Math.min(1, (0.82 - altRatio) / 0.15));
-    if (globalCloudAlpha <= 0) return;
+    if (globalCloudAlpha <= 0.01) return;
 
     ctx.save();
 
@@ -1051,7 +1298,7 @@ export class GameRenderer {
   ) {
     if (altRatio >= 0.35) return;
     const hillAlpha = Math.max(0, Math.min(1, (0.35 - altRatio) / 0.15));
-    if (hillAlpha <= 0) return;
+    if (hillAlpha <= 0.01) return;
 
     ctx.save();
     ctx.globalAlpha = hillAlpha;
@@ -1092,7 +1339,7 @@ export class GameRenderer {
   ) {
     if (altRatio >= 0.16) return;
     const sporeAlpha = Math.max(0, (0.16 - altRatio) / 0.16);
-    if (sporeAlpha <= 0) return;
+    if (sporeAlpha <= 0.01) return;
 
     ctx.save();
     ctx.fillStyle = 'rgba(254, 240, 138, 0.45)';

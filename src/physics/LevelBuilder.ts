@@ -59,8 +59,12 @@ export class LevelBuilder {
     ice: { fill: '#115e59', stroke: '#2dd4bf', friction: 0.45 },
   };
 
+  private spatialCellSize = 8;
+  private spatialGrid: Map<string, TerrainBlock[]> = new Map();
+
   constructor(private world: planck.World) {
     this.buildReverseEngineeredOriginalMap();
+    this.buildSpatialIndex();
   }
 
   private addPolygonChain(
@@ -219,14 +223,50 @@ export class LevelBuilder {
     return false;
   }
 
-  /**
-   * Returns the first TerrainBlock that contains the point (px, py), or null if in open air.
-   */
-  public getContainingBlock(px: number, py: number): TerrainBlock | null {
+  public buildSpatialIndex() {
+    this.spatialGrid.clear();
     for (let i = 0; i < this.blocks.length; i++) {
       const b = this.blocks[i];
-      if (this.isPointInsideBlock(px, py, b)) {
-        return b;
+      if (
+        b.minX === undefined ||
+        b.maxX === undefined ||
+        b.minY === undefined ||
+        b.maxY === undefined
+      ) {
+        continue;
+      }
+      const minCx = Math.floor(b.minX / this.spatialCellSize);
+      const maxCx = Math.floor(b.maxX / this.spatialCellSize);
+      const minCy = Math.floor(b.minY / this.spatialCellSize);
+      const maxCy = Math.floor(b.maxY / this.spatialCellSize);
+      for (let cx = minCx; cx <= maxCx; cx++) {
+        for (let cy = minCy; cy <= maxCy; cy++) {
+          const key = `${cx},${cy}`;
+          let list = this.spatialGrid.get(key);
+          if (!list) {
+            list = [];
+            this.spatialGrid.set(key, list);
+          }
+          list.push(b);
+        }
+      }
+    }
+  }
+
+  /**
+   * Returns the first TerrainBlock that contains the point (px, py), or null if in open air.
+   * Uses 8m uniform-grid spatial index for O(1) broadphase.
+   */
+  public getContainingBlock(px: number, py: number): TerrainBlock | null {
+    const cx = Math.floor(px / this.spatialCellSize);
+    const cy = Math.floor(py / this.spatialCellSize);
+    const list = this.spatialGrid.get(`${cx},${cy}`);
+    if (list) {
+      for (let i = 0; i < list.length; i++) {
+        const b = list[i];
+        if (this.isPointInsideBlock(px, py, b)) {
+          return b;
+        }
       }
     }
     return null;
